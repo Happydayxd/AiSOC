@@ -669,6 +669,14 @@ jobs:
           python3 scripts/check_hunt_scenarios.py --self-test
           python3 scripts/check_hunt_scenarios.py
           python3 scripts/run_hunt_evals.py --self-test
+      # A retro-hunt sweeps a column or it sweeps nothing, and the failure is
+      # a confident zero rather than an error. This reads the lake writer, the
+      # ClickHouse DDL and the three threat-intel clients and fails when the
+      # sweep's mapping disagrees with any of them.
+      - name: Retro-hunt sweeps columns the lake writer fills
+        run: |
+          python3 scripts/check_ioc_lake_mapping.py --self-test
+          python3 scripts/check_ioc_lake_mapping.py
       - name: Support bundle must not leak
         run: |
           python3 -m pip install --quiet pytest
