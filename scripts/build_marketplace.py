@@ -333,6 +333,10 @@ def build_detection_item(
     tags = normalise_tags(raw_tags)
     category = data.get("category") or path.parent.name
     enabled = data.get("enabled")
+    # The engine's own loaded set, which is what `docs/detections/truth-table.md`
+    # calls executable and what the README's 2,603 counts.
+    rule_id = str(data.get("id") or path.stem)
+    executable = rule_id in engine_rule_ids()
     if quarantined:
         # Quarantine directory layout has the category two levels below the
         # tier root (e.g. sigma-imports/_quarantine/cloud/foo.yaml).
@@ -361,11 +365,32 @@ def build_detection_item(
         "source": source,
         "tier": tier,
         "enabled": False if (quarantined or enabled is False) else True,
+        # Whether the engine loads this rule, which is the only thing that
+        # decides whether it can fire.
+        #
+        # **Not** `enabled`. That field is the YAML's own flag OR-ed with the
+        # directory, and the two disagree with the engine in one direction at
+        # scale: 1,724 rules carry `enabled: false` in their file and the
+        # engine loads all of them, because the Sigma compiler began
+        # translating rules in place without rewriting the flag. Publishing
+        # `enabled` as the capability signal would mark those 1,724 working
+        # rules unusable — understating the corpus in exactly the direction
+        # this repository normally guards the other way.
+        #
+        # `docs/detections/truth-table.md` already asks the engine rather
+        # than the path, and 2,603 is the figure the README publishes. This
+        # reads the same set, so the catalogue cannot disagree with them.
+        "executable": executable,
         "path": str(path.relative_to(REPO_ROOT)),
     }
-    if quarantined:
+    # Every rule that cannot fire says why. The reason used to be written
+    # only on the quarantine branch, so a rule the engine skips for any other
+    # cause arrived in the catalogue indistinguishable from a working one.
+    if not executable:
         item["quarantine_reason"] = data.get("quarantine_reason") or (
             "imported rule; upstream query language not directly executable by the AiSOC engine yet"
+            if quarantined
+            else "disabled in the rule file (`enabled: false`); the engine does not load it"
         )
     provenance = data.get("provenance")
     if isinstance(provenance, dict):
@@ -647,7 +672,21 @@ def build_index() -> dict[str, Any]:
             "community": sum(1 for i in items if i.get("source") == "community"),
             "by_tier": _tier_breakdown(items),
             "detections_by_tier": _detection_tier_breakdown(items),
-            "quarantined": sum(1 for i in items if i.get("quarantine_reason")),
+            # The split a reader of this catalogue needs, and the one it did
+            # not have. `quarantined` counted rows carrying a
+            # `quarantine_reason` — 4,213 against 4,388 rules the engine does
+            # not load — so the published figure and the truth table's were
+            # two numbers nothing compared.
+            #
+            # Both read `executable`, which is membership of the engine's
+            # loaded rule set, so they partition the catalogue: every item is
+            # one or the other and they sum to `total`. Playbooks and plugins
+            # are not engine rules and carry no `executable` field, so they
+            # default to the executable side — they are shipped, installable
+            # content, and calling them non-executable would be its own
+            # falsehood.
+            "executable": sum(1 for i in items if i.get("executable", True)),
+            "quarantined": sum(1 for i in items if not i.get("executable", True)),
         },
         "mitre_coverage": coverage_block(items),
         "items": items,
