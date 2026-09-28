@@ -260,7 +260,15 @@ export function ThreatIntelView() {
   // absence. `?? []` then published "Malicious (of shown): 0" — a security
   // verdict — and an empty state telling the operator to go connect a feed,
   // on a store the page could not reach.
-  const storeUnknown = !data;
+  //
+  // `degraded` is the other half, and the live one. With no threat-intel
+  // service reachable the route answers **HTTP 200** carrying
+  // `degraded: true` and a reason — an explicit statement that nothing was
+  // measured — so `!data` is false and every figure on this page rendered a
+  // confident zero over it. `threatIntelApi.lookup` already treats the same
+  // flag as a failed lookup; the list did not.
+  const storeUnknown = !data || data.degraded === true;
+  const degradedReason = data?.reason?.trim() || null;
 
   // Not `?? MOCK_INDICATORS`. `fallbackData` above already withholds the
   // sample set outside the hosted demo; repeating the constant here put it
@@ -358,7 +366,9 @@ export function ThreatIntelView() {
                   : 'text-gray-400 bg-gray-800/60 hover:bg-gray-800'
               )}
             >
-              {t === 'all' ? 'All' : t.toUpperCase()} ({typeCounts[t] ?? 0})
+              {/* Five chips reading `(0)` is five measured claims about a
+                  store the page could not reach. */}
+              {t === 'all' ? 'All' : t.toUpperCase()} ({storeUnknown ? '—' : typeCounts[t] ?? 0})
             </button>
           ))}
         </div>
@@ -368,10 +378,18 @@ export function ThreatIntelView() {
       <div className="bg-gray-900/60 border border-gray-800/60 rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-medium text-gray-300">Indicators of Compromise</h3>
-          <span className="text-xs text-gray-500">
-            {totalCollected > indicators.length
-              ? `${indicators.length.toLocaleString()} of ${totalCollected.toLocaleString()} indicators`
-              : `${indicators.length.toLocaleString()} indicators`}
+          {/* `storeUnknown` is the same signal the empty state below uses to
+              say "this is not a report that no indicators exist". This
+              counter said `0 indicators` directly above that sentence. */}
+          <span
+            className="text-xs text-gray-500"
+            title={storeUnknown ? 'The threat-intel service has not answered, so there is no count to show.' : undefined}
+          >
+            {storeUnknown
+              ? '— indicators'
+              : totalCollected > indicators.length
+                ? `${indicators.length.toLocaleString()} of ${totalCollected.toLocaleString()} indicators`
+                : `${indicators.length.toLocaleString()} indicators`}
           </span>
         </div>
         {indicators.length === 0 ? (
@@ -405,7 +423,10 @@ export function ThreatIntelView() {
                 storeUnknown
                   ? isLoading
                     ? 'Reading indicators from the threat-intel service.'
-                    : `The threat-intel service did not answer${error ? '' : ''}. This is not a report that no indicators exist.`
+                    : // The route's own `reason` when it sent one, because
+                      // "did not answer (ConnectError)" tells an operator
+                      // where to look and a generic sentence does not.
+                      `${degradedReason ?? 'The threat-intel service did not answer'}. This is not a report that no indicators exist.`
                   : 'Connect a TI feed (MISP, OTX, AbuseIPDB, GreyNoise, internal STIX/TAXII) from Settings → Connectors to start enriching alerts with reputation context.'
               }
               className="bg-transparent py-8"
