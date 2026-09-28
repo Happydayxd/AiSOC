@@ -19,8 +19,12 @@ file.
 from __future__ import annotations
 
 import ast
+import importlib.util
+import os
 import pathlib
 import re
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -129,6 +133,48 @@ def prod() -> dict:
         "has told operators to run it since the page was written (discussion #629)."
     )
     return _services(PROD)
+
+
+class TestTheDocumentedCommandIsTheOneThatWorks:
+    """The deployment page and this file must name the same invocation.
+
+    The production stack was written with `include:` and a single `-f`, which
+    resolves on Compose 5.x and is rejected by 2.x with
+    `services.<name> conflicts with imported resource` — `include` imports a
+    model, and overriding a service it imported is an error. Measured against
+    v2.29.7 and v2.39.4: both fail. So the documented production command
+    worked on almost no installation, and nothing noticed because the smoke
+    job only ever drove `docker-compose.yml`.
+
+    These are static assertions rather than a subprocess call, so they hold on
+    a runner with no Docker; the compose-smoke workflow exercises the real
+    binary.
+    """
+
+    def test_the_production_file_does_not_import_the_base(self) -> None:
+        document = yaml.load(PROD.read_text(encoding="utf-8"), Loader=_ComposeLoader)  # noqa: S506
+        assert "include" not in (document or {}), (
+            "`include:` plus an override of an imported service is rejected by every released Compose 2.x. Use two `-f` flags instead."
+        )
+
+    def test_the_docs_give_both_files_in_order(self) -> None:
+        page = (REPO / "apps" / "docs" / "docs" / "deployment" / "docker.md").read_text(encoding="utf-8")
+        assert "-f docker-compose.yml -f docker-compose.prod.yml" in page, (
+            "the deployment page must give both files, base first — the overlay alone does not resolve on Compose 2.x"
+        )
+        assert "-f docker-compose.prod.yml up" not in page.replace("-f docker-compose.yml -f docker-compose.prod.yml up", ""), (
+            "the page still shows the single-file form somewhere"
+        )
+
+    def test_the_smoke_workflow_drives_the_same_command(self) -> None:
+        """A workflow that exercises a different invocation than the docs
+        publish proves nothing about the documented one."""
+        flow = (REPO / ".github" / "workflows" / "compose-smoke.yml").read_text(encoding="utf-8")
+        if "docker-compose.prod.yml" in flow:
+            assert "-f docker-compose.yml -f docker-compose.prod.yml" in flow
+            assert flow.count("-f docker-compose.prod.yml") == flow.count("-f docker-compose.yml -f docker-compose.prod.yml"), (
+                "some invocation still passes the overlay alone"
+            )
 
 
 class TestTheBypassIsUnreachable:
@@ -398,3 +444,121 @@ class TestNoDatastoreIsBoundToTheHost:
         profiles = (prod.get("kafka-ui") or {}).get("profiles") or []
         assert "full" not in profiles, "`--profile full` would start kafka-ui beside production data"
         assert profiles, "kafka-ui has no profile at all, so it now starts in the default stack"
+
+
+# ─── `${VAR:?}` cannot look at a value ───────────────────────────────────────
+#
+# The sixteen assertions above all read this file statically, and every one of
+# them passed while the stack booted on `aisoc_dev_secret`. Compose's `:?`
+# operator rejects an **unset or empty** variable; it has no way to compare
+# one. `.env.example` shipped `POSTGRES_PASSWORD=aisoc_dev_secret` and
+# `docker-compose.yml` defaults the same variable to the same literal, so the
+# one input `${POSTGRES_PASSWORD:?… the development default is a published
+# literal}` names is the one input it accepts.
+#
+# `TestNothingStartsOnAPublishedCredential` above is therefore about the
+# *shape* of the guard. What follows is about the value, and it runs the real
+# program rather than reading the file that describes it.
+
+
+def _load_checker():
+    spec = importlib.util.spec_from_file_location("check_published_secrets", REPO / "scripts" / "check_published_secrets.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_checker(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """`--check-env` in a subprocess, with a controlled environment.
+
+    A subprocess rather than a function call: `--check-env` reads
+    `os.environ`, and the thing worth asserting is the exit status the
+    preflight container produces, not a return value.
+    """
+    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, str(REPO / "scripts" / "check_published_secrets.py"), "--check-env"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": os.environ.get("PATH", ""), "AISOC_REPO_ROOT": str(REPO), **env},
+    )
+
+
+class TestAPublishedValueCannotSatisfyAGuard:
+    def test_the_harvest_finds_the_literals_this_repository_publishes(self) -> None:
+        published = _load_checker().published_literals(REPO)
+        # Named explicitly. The harvest is derived from the tree so it cannot
+        # go stale, but a regex that silently stops matching would make it
+        # derive nothing and every check below would pass.
+        for literal in ("aisoc_dev_secret", "aisoc_app_dev_secret", "redis_dev_secret", "clickhouse_dev_secret"):
+            assert literal in published, f"{literal} is published in this tree and was not harvested"
+
+    def test_a_real_secret_is_accepted(self) -> None:
+        """The other direction. A checker that refused everything would pass
+        the test below and ship a production stack that cannot start."""
+        result = _run_checker({"POSTGRES_PASSWORD": "9b20969c058203d8a725c09800645f4666f913d80590c094"})  # gitleaks:allow
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        ("variable", "value"),
+        [
+            ("POSTGRES_PASSWORD", "aisoc_dev_secret"),
+            ("AISOC_APP_DB_PASSWORD", "aisoc_app_dev_secret"),
+            ("REDIS_PASSWORD", "redis_dev_secret"),
+            ("CLICKHOUSE_PASSWORD", "clickhouse_dev_secret"),
+            ("SECRET_KEY", "dev_secret_key_change_in_production"),
+            ("GRAFANA_ADMIN_PASSWORD", "admin"),
+            # The value, not the variable. Reusing one variable's published
+            # literal on another is the same disclosure.
+            ("NEO4J_PASSWORD", "aisoc_dev_secret"),
+            # And inside a DSN, which is where three of them used to live.
+            ("REDIS_URL", "redis://:redis_dev_secret@redis:6379/0"),
+        ],
+    )
+    def test_a_published_value_is_refused(self, variable: str, value: str) -> None:
+        result = _run_checker({variable: value})
+        assert result.returncode == 1, f"{variable}={value} was accepted:\n{result.stdout}{result.stderr}"
+        assert variable in result.stderr
+
+    def test_the_checker_refuses_rather_than_reporting_clean_over_an_empty_tree(self, tmp_path: pathlib.Path) -> None:
+        """`published_literals` over a tree with no compose files harvests
+        nothing, and nothing matches nothing. Reporting OK there would make
+        the preflight a no-op in any deployment whose mount went wrong."""
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, str(REPO / "scripts" / "check_published_secrets.py"), "--check-env"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "AISOC_REPO_ROOT": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "harvested no published values" in result.stderr
+
+    def test_every_guard_reaches_the_preflight(self) -> None:
+        """A guard added later without extending the preflight is how this
+        rots: the variable would be required-non-empty and unchecked."""
+        checker = _load_checker()
+        guarded = checker.guarded_variables(PROD)
+        preflight = _services(PROD).get(checker.PREFLIGHT_SERVICE) or {}
+        received = {key for key, _ in _env_items(preflight)}
+        assert guarded - received == set(), f"guarded but never checked: {sorted(guarded - received)}"
+
+    def test_nothing_starts_before_the_preflight(self) -> None:
+        checker = _load_checker()
+        overlay = _services(PROD)
+        ungated = sorted(
+            name
+            for name, service in overlay.items()
+            if name != checker.PREFLIGHT_SERVICE and checker.PREFLIGHT_SERVICE not in ((service or {}).get("depends_on") or {})
+        )
+        assert not ungated, f"these start without waiting for the credential check: {ungated}"
+
+    def test_every_base_service_is_covered_by_the_overlay(self) -> None:
+        """`depends_on` can only be added to a service the overlay names. A
+        service defined only in the base file inherits nothing from here, and
+        one such service starting ahead of the check is the whole hole."""
+        checker = _load_checker()
+        overlay = set(_services(PROD))
+        missing = sorted(set(_services(DEV)) - overlay - {checker.PREFLIGHT_SERVICE})
+        assert not missing, f"defined in docker-compose.yml and not restated here, so ungated: {missing}"
