@@ -852,6 +852,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--wet-model",
+        default=None,
+        help=(
+            "Only meaningful with --wet. The model the run is actually served "
+            "by, written into the report's `model` field. Without it a local "
+            "Ollama run labels itself with the headline rate-card model, so "
+            "the report names a model that was never called and prices the "
+            "tokens against that model's list."
+        ),
+    )
+    parser.add_argument(
         "--wet-require-live",
         action="store_true",
         help=(
@@ -884,6 +895,7 @@ def main() -> None:
         try:
             wet_report = compute_wet_eval(
                 mode=wet_mode,
+                model=args.wet_model or _TELEMETRY_DEFAULT_MODEL,
                 harness_version=(f"scripts/run_evals.py @ {os.environ.get('GITHUB_SHA', 'local')}"),
                 limit=args.wet_limit,
                 require_live=args.wet_require_live,
@@ -911,7 +923,10 @@ def main() -> None:
             print()
             print("=" * 78)
             label = "DRY RUN" if wet_mode == "dry_run" else "LIVE"
-            print(f"  AiSOC wet-eval ({label}) — 200-incident synthetic corpus")
+            # The slice, not the corpus. The banner said "200-incident" while
+            # --wet-limit was dispatching 20, so the sample size a reader took
+            # away was whichever number the header happened to hardcode.
+            print(f"  AiSOC wet-eval ({label}) — {wet_block['incidents']} of 200 synthetic incidents")
             print("=" * 78)
             print(f"  Mode:           {wet_block['mode']}")
             print(f"  Model:          {wet_block['model']}")
@@ -922,8 +937,21 @@ def main() -> None:
             tot = wet_block["tokens"]["total"]
             print(f"  Tokens / inv:   mean={tot['mean']:.0f}  median={tot['median']:.0f}  p95={tot['p95']:.0f}  p99={tot['p99']:.0f}")
             usd = wet_block["usd"]
-            print(f"  USD / inv:      mean=${usd['mean']:.5f}  median=${usd['median']:.5f}  p95=${usd['p95']:.5f}  p99=${usd['p99']:.5f}")
+            if usd.get("measured") is False:
+                print(f"  USD / inv:      {usd.get('note', 'not measured')}")
+            else:
+                print(
+                    f"  USD / inv:      mean=${usd['mean']:.5f}  median=${usd['median']:.5f}  p95=${usd['p95']:.5f}  p99=${usd['p99']:.5f}"
+                )
             print(f"  MITRE accuracy: {wet_block['mitre_accuracy']:.4f}")
+            grounded = wet_block.get("groundedness") or {}
+            if grounded.get("measured"):
+                print(
+                    f"  Groundedness:   mean={grounded['mean']:.4f}  median={grounded['median']:.4f}  "
+                    f"min={grounded['min']:.4f}  p05={grounded['p05']:.4f}  (n={grounded['scored_incidents']})"
+                )
+            else:
+                print(f"  Groundedness:   {grounded.get('note', 'not measured')}")
             if wet_block.get("warnings"):
                 print("-" * 78)
                 print("  Warnings:")
