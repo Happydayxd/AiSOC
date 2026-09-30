@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### BREAKING
+
+- **An unauthenticated request is no longer an administrator, and `AISOC_DEV_MODE` no longer admits an uncredentialed caller.** If you rely on either, here is what changes and how to get it back.
+
+  | What used to work | What happens now | How to restore it |
+  |---|---|---|
+  | `ENVIRONMENT=development` (the compose and `.env.example` default) served a request with no `Authorization` header as `admin` | `401` | Set `AISOC_DEV_AUTH_BYPASS=1`, or use `infra/compose/docker-compose.dev.yml` |
+  | The same, while the stack published a non-loopback address | `401` even with the flag set | Bind to `127.0.0.1`, or authenticate |
+  | `AISOC_DEV_MODE=1` with no `SECRET_KEY` and no service token admitted an uncredentialed caller to the nine services carrying `require_console_or_service_auth` | `503` | Set `AISOC_DEV_AUTH_BYPASS=1` as well, and keep the published addresses on loopback |
+  | The same on `require_service_auth` in `ueba`, `honeytokens` and `purple-team` | `503`, with no flag that re-enables it | Set `AISOC_SERVICE_TOKEN`. `make env` generates one |
+  | `POST /internal/approval-card` on `slack-bot` with `AISOC_INTERNAL_TOKEN` unset | `401` | `make env` now generates `AISOC_INTERNAL_TOKEN` |
+  | `POST /v1/push/subscribe`, `/unsubscribe` and `/test` on `realtime` with no credential | `401` | Call through the API's `/api/v1/push/*` proxy, which authenticates you and stamps the token |
+  | Those push routes taking the tenant from a `tenant_id` query parameter, or defaulting to the string `'default'` | `400` unless `X-Tenant-Id` is present | The proxy stamps it from your session |
+
+  **The demo tenant also moved**, from `00000000-0000-0000-0000-000000000001` to `00000000-0000-0000-0000-0000000000de`. A stack that ran the demo seed and wants its old demo rows back should re-run `make demo`. The canonical tenant id is unchanged.
+
 ### Security
 
 - **Ten newly-disclosed advisories in two transitive dependencies.** `axios` moved to `>=1.20.0` through a `pnpm.overrides` entry (six high-severity advisories against the 1.x line, all patched in 1.20.0: GHSA-c29m-xwm3-cm6r, GHSA-mghh-pgcx-3jjj, GHSA-3pq3-5fj3-cg6v, GHSA-542g-h47m-68v8, GHSA-m8m8-qj5v-23w3, GHSA-r4gj-5m52-g5wh). A seventh, GHSA-x97p-jq2g-jp4f, covers 0.28.0 to 0.34.0, a line nothing in this tree resolves, so the bound is written against 1.x rather than spanning both.
@@ -26,6 +42,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The server-side prefetch in `apps/web/src/app/(app)/cases/page.tsx` was removed rather than credentialed. It sent a build-time tenant id and no token, so it served one fixed tenant's cases to whoever loaded the page; a server render has no session to borrow, so there was no authenticated version of that call to keep. The `initialCases` prop it fed went with it, along with the two assertions in `CasesViewSsr.test.tsx` that only described it — the two covering the demo gate remain, since that is the direction with a production path.
 
   The gate that keeps it closed is wired into `ci.yml` beside the sample-data gate, and runs `--self-test` first. Three blind spots in its own first draft are pinned as cases, each of which had made it silently miss real findings: a generic type argument (`useSWR<Role[]>(...)`) hid both settings SWR sites, a multi-line arrow fetcher was truncated at the first newline so nine calls on the honeytokens and purple-team pages read as "imported, judged elsewhere", and an inline fetcher whose URL is the SWR key has no API path at the call site to match on at all.
+
+- **An anonymous caller was an administrator in the operator's own tenant, on every documented deployment.** Three things had to be true at once and all three were, by default:
+
+  1. `ENVIRONMENT` defaulted to `development` in `docker-compose.yml`, in `.env.example`, and therefore in the `.env` that `scripts/ensure_env.py` copies verbatim on first run. `development` is in `AUTH_BYPASS_ENVIRONMENTS`, so `get_current_user` resolved a request with no bearer token to a demo user whose role is `admin`.
+  2. `dev_auth.DEMO_TENANT_ID` and `bootstrap_admin.DEFAULT_TENANT_ID` were **byte-identical** (`…0001`). So that administrator was not sandboxed in a demo tenant; it was an administrator of the tenant `make bootstrap` had just put the operator's real account into, with their alerts and their vault-encrypted connector credentials in it.
+  3. `apps/docs/docs/deployment/single-host.md` and `walkthrough.mdx` instruct `AISOC_CONSOLE_BIND_ADDR=0.0.0.0`, and neither page mentions `ENVIRONMENT`, `production` or `docker-compose.prod.yml` anywhere.
+
+  An environment name cannot carry that weight. It is a label chosen for logging verbosity and docs URLs, it defaults to a dev-class value, and nothing about setting it says "and make this host anonymous". So the shim now needs `AISOC_DEV_AUTH_BYPASS`, whose only meaning is the bypass and which no compose file or template sets, and it is refused outright when the deployment publishes an address that is not loopback. The API cannot work that out alone — it binds `0.0.0.0` inside a container — so compose passes the published addresses in through `AISOC_PUBLISHED_BIND_ADDRS`. Every refusal names the condition that withheld it, in the log, because silence is how this stayed invisible: an operator who expected the bypass and one who did not both saw the same 401.
+
+  The demo identity was given a tenant of its own, and `bootstrap_admin` now refuses to create a real account in it and will not adopt it as the oldest existing tenant. The canonical id stays where it is, because ten modules pin it, including the ingest-token minter and the agents ledger.
+
+  Measured, in both directions: 36 cases in `services/api/tests/test_anonymous_bypass_requires_optin.py`, of which 35 fail at `079fdb69` and all 36 pass here. The tenant-sharing assertion fails pre-fix as `assert UUID('…0001') != UUID('…0001')`.
+
+- **The same shape in nine sibling services, plus slack-bot and realtime.** `AISOC_DEV_MODE` defaults to `1` on ten services in `docker-compose.yml`, and it selects table autocreate, docs URLs, the metrics gate, log formatting, the GraphiQL UI and an ephemeral vault key as well. A flag that means nine things cannot be refused for one of them.
+
+  - The nine vendored `require_console_or_service_auth` copies admitted a caller with no credential at all whenever neither `SECRET_KEY` nor a service token was configured. They now need `AISOC_DEV_AUTH_BYPASS` too, refuse on a published non-loopback address, and scope the admitted principal to the demo tenant rather than the canonical one. Fixed in `services/fusion/app/security/tenant_scope.py` and propagated by `scripts/sync_vendored_tenant_scope.py`, so all nine move together.
+  - `require_service_auth` in `ueba`, `honeytokens` and `purple-team` had the same exemption. It is **removed outright**, with no replacement flag, following the precedent `services/actions/app/security/authz.py` already set: a service-to-service dependency has no browser to keep usable, so a 503 naming the variable to set is the whole of what is needed.
+  - `slack-bot`'s `POST /internal/approval-card` treated an unset `AISOC_INTERNAL_TOKEN` as "no auth needed" under `AISOC_DEV_MODE`, and **nothing generated that token** — it appeared only commented out in `.env.example`. So the exemption was not a convenience, it was the only state a stock install ran in, on a route that posts into a workspace channel. `scripts/ensure_env.py` now generates the token, which is what makes requiring it unconditionally viable.
+  - `realtime`'s three `POST /v1/push/*` routes carried only a rate limiter, and `tenantOf` read a request header, then a `tenant_id` **query parameter**, then the literal string `'default'`. Any caller who could reach the port could enrol a push endpoint against any tenant, unsubscribe another tenant's devices, or make the service send a notification. They now require the same internal token `/internal/*` requires, which makes the API's `/api/v1/push/*` proxy the only way in — the arrangement the module's comments already assumed.
+
+    Two adjacent defects surfaced while fixing it. The proxy stamped `X-AiSOC-Internal-Token` while `requireInternal` reads `x-internal-token`, so **the token it sent was never checked**; the receiver now accepts both spellings and the proxy sends both. And `userOf` preferred a caller-supplied body field over the stamped `X-User-Id`, under a comment saying the API gateway "is expected to" validate it — it does not, so a caller could enrol a push endpoint against another user in their own tenant. The precedence is now header first.
+
+    The `'default'` fallback deserves naming separately: it is not a tenant. Migration 001 seeds the canonical tenant with that *slug* and the demo seed renames it, so every subscription that reached the fallback was filed under a Redis key belonging to nobody, silently. `tenantOf` now throws and the routes answer 400.
+
+- **The golden pipeline was reading the API as an anonymous administrator.** `tests/e2e/golden_pipeline/run_golden_pipeline.py` drives one real event through the spine and then asks the API whether it became an alert. That read carried no credential and succeeded, because an uncredentialed request resolves to a demo administrator in a development-class environment and every documented path produced one — so the project's only end-to-end claim of "it works" was being made through the bypass, without anybody having decided that.
+
+  The harness now carries a bearer token, minted by `app.scripts.mint_api_token` — the sibling of `mint_ingest_token`, and a shipped command for the same reason: the step that calls it also covers a path an operator can follow (`make api-token`). It creates nothing, refuses when no account exists, and refuses the demo tenant outright, because a real token scoped to the tenant the shim hands anonymous callers would make the bypass reachable from outside the bypass.
+
+  A refused read is now reported as refused. The first version spent 90 seconds on a 401 and then suggested checking Kafka, the fusion consumer and the alerts table — three things that were all working.
+
+  Two things caught by gates rather than by the suite: `scripts/check_tenant_query_predicates.py` flagged the first draft for selecting "the most privileged active account anywhere", which is unscoped against a table with no row-level security and a vague target on a multi-tenant deployment; and every test passed while `DEFAULT_TENANT_ID` was not imported at all, because each one supplied a tenant explicitly and none reached the default branch. Ruff found it.
+
+- **A test-isolation trap worth recording, because it cost a diagnosis.** The first draft of the new API test file called `importlib.reload` on `app.api.v1.deps`, copying an older test in the same directory. That rebinds every function object in the module, so the `dependency_overrides` other test modules keyed on the old objects stop matching and their routes fall through to real authentication: **146 tests failed across three unrelated files, every one of which passes in isolation.** The older test got away with it only because its filename sorts near the end of the suite. Neither file reloads anything now, and neither needs to — the shim reads `os.environ` at call time precisely so that it does not.
 
 ## [14.0.0] - 2026-09-29
 
