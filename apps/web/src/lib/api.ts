@@ -188,6 +188,71 @@ export function apiHeaders(extra?: HeadersInit): Record<string, string> {
   return headers;
 }
 
+
+/**
+ * Whether a JWT's `exp` has passed. True when it cannot be read.
+ *
+ * Deliberately does not verify the signature: the browser cannot, and
+ * this is a usability check rather than a security one. The API verifies
+ * for real, and a forged token simply 401s there.
+ */
+export function isTokenExpired(token: string, nowSeconds?: number): boolean {
+  const parts = token.split('.');
+  if (parts.length !== 3) return true;
+  try {
+    const payload = JSON.parse(
+      atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')),
+    ) as { exp?: number };
+    if (typeof payload.exp !== 'number') return false;
+    // A small skew, so a token that expires mid-request does not bounce
+    // the user out of a page that was working a second ago.
+    const now = nowSeconds ?? Math.floor(Date.now() / 1000);
+    return payload.exp <= now - 5;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Routes that must not trigger the 401 self-heal.
+ *
+ * Signing in is where a 401 means "wrong password", not "your session
+ * died" — redirecting there would replace the form's error message with a
+ * reload of the same form.
+ *
+ * `/auth/register` was listed here for one commit and the console
+ * route-contract gate rejected it: the API serves `login`, `refresh`,
+ * `me` and `me/preferences`, and nothing else under `/auth`. An exemption
+ * for a route that does not exist is dead weight that reads like a
+ * promise.
+ */
+const AUTH_EXEMPT_PATHS = ['/api/v1/auth/login', '/api/v1/auth/refresh'];
+
+/**
+ * Clear a dead session and send the user to sign in again.
+ *
+ * Called on a 401 from any route that is not itself part of signing in.
+ * Without this a user whose token expired mid-session saw every panel
+ * fail with no explanation and no way to recover.
+ */
+function handleUnauthorized(path: string): void {
+  if (typeof window === 'undefined') return;
+  if (AUTH_EXEMPT_PATHS.some((exempt) => path.startsWith(exempt))) return;
+  // Already on the sign-in page: clearing is right, navigating would loop.
+  const onLogin = window.location.pathname.startsWith('/login');
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    window.localStorage.removeItem(AUTH_REFRESH_KEY);
+    window.localStorage.removeItem(AUTH_USER_KEY);
+  } catch {
+    /* localStorage unavailable; the redirect below still helps */
+  }
+  if (!onLogin) {
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.assign(`/login?next=${next}`);
+  }
+}
+
 async function request<T>(path: string, options: FetchOptions = {}): Promise<T> {
   const { params, baseUrl, ...fetchOptions } = options;
 
@@ -222,6 +287,11 @@ async function request<T>(path: string, options: FetchOptions = {}): Promise<T> 
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => '');
+    if (response.status === 401) {
+      // Self-heal rather than leaving the user on a page where every
+      // panel fails silently and nothing offers a way back.
+      handleUnauthorized(path);
+    }
     throw new ApiError(
       `API ${response.status} ${response.statusText} — ${path}`,
       response.status,
@@ -377,10 +447,25 @@ export const authApi = {
     }
   },
 
+  /**
+   * Whether there is a session that can still make a request.
+   *
+   * This used to answer "is a token stored", which is a different
+   * question and produced an inescapable lockout: `/login` saw a stored
+   * token, redirected to `/dashboard`, every call there 401'd, and
+   * nothing sent the user back. The only way out was clearing browser
+   * storage, which is not a thing to ask of an operator.
+   *
+   * An unreadable or unparseable token counts as **not** authenticated:
+   * the pessimistic answer costs a sign-in, the optimistic one costs the
+   * lockout.
+   */
   isAuthenticated(): boolean {
     if (typeof window === 'undefined') return false;
     try {
-      return Boolean(window.localStorage.getItem(AUTH_TOKEN_KEY));
+      const token = window.localStorage.getItem(AUTH_TOKEN_KEY);
+      if (!token) return false;
+      return !isTokenExpired(token);
     } catch {
       return false;
     }
