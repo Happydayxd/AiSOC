@@ -344,6 +344,15 @@ jobs:
       # themselves the same published number.
       - name: Verify vendored aisoc_benchmark is in sync
         run: python scripts/sync_vendored_benchmark.py --check
+      # The gates in this repository certify functions, not call paths, so a
+      # claim row can pass on a unit test of a module nothing imports. That
+      # is not hypothetical: the hunting agent, the pseudonymizer, the
+      # closure guardrails and a working ReAct loop were each complete,
+      # tested, and reachable from nothing.
+      - name: Module reachability — self-test
+        run: python scripts/check_module_reachability.py --self-test
+      - name: Verify every service module has a production importer
+        run: python scripts/check_module_reachability.py
       # Two permission models shipped side by side: 275 route dependencies
       # read the hardcoded ROLE_PERMISSIONS map while 27 read the
       # user_roles / role_permissions tables the console's RBAC screen
@@ -1339,6 +1348,19 @@ jobs:
         # runners and no workflow ever ran it.
         run: python3 scripts/check_store_migrations.py
 
+      # Both of these import each service's FastAPI app, so they belong in
+      # the job that installs the service dependencies rather than the lint
+      # job, which installs only ruff and mypy. Placed there first, they
+      # failed closed with "the source tree was not read", which was the
+      # right refusal in the wrong place.
+      - name: Console route contract — self-test
+        run: python scripts/check_console_route_contract.py --self-test
+      - name: Verify every console API path resolves to a route or a rewrite
+        run: python scripts/check_console_route_contract.py
+      - name: Duplicate routes — self-test
+        run: python scripts/check_route_duplicates.py --self-test
+      - name: Verify no method and path pair is registered twice
+        run: python scripts/check_route_duplicates.py
       - name: Gate the public benchmark scoreboard (Phase E1)
         # Ties apps/docs/static/data/scoreboard.json to a real deterministic
         # live-agent MITRE-accuracy run: the newest substrate row must match a
