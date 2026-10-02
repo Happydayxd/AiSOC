@@ -188,17 +188,17 @@ Agents triage alerts and investigate incidents. What they can and cannot do:
 | Detection engine (2603 executable rules) of 6991 | Stable | Replay proof | Yes |
 | Alert correlation into incidents | Stable | Unit | Yes |
 | REST API + web console | Stable | Unit + integration | Yes |
-| AI triage + Investigation Ledger | Beta | Unit + substrate eval + local-model run | Yes, copilot mode |
-| Event lake + hunting (ClickHouse) | Beta | Unit | Yes, `full` profile |
-| Retro-hunts when new intel arrives | Beta | Unit + live ClickHouse replay | Yes, `full` profile |
-| 68-hunt YAML library, replayed against synthetic events | Alpha | Unit + boundary gate | `full` profile. The NL hunting agent is **not wired** — nothing outside its own test imports it, and the scheduler reads a synthetic corpus rather than tenant data (parity 6.1) |
-| SCIM 2.0, white-label, usage metering | Beta | Unit + Okta/Entra sequences | Yes |
-| Entity graph (Neo4j) | Beta | Unit | Yes, `full` profile |
-| Governed response actions | Beta | Unit | Human-approved only |
-| Alert-triggered playbooks, with a durable approval pause | Beta | Unit + live Postgres suspend/resume | Yes — three opt-ins deep, preview by default |
-| Per-tenant detection tuning in the live engine | Beta | Unit + live overlay read | Yes |
-| Scheduled connectors | Beta | Contract tests | `full` profile |
-| UEBA | Beta | Unit + live migration round-trip | `full` profile |
+| AI triage + Investigation Ledger | Stable | Live Postgres ledger + a PR-gated local-model agent run. No hosted provider has been exercised | Yes, copilot mode |
+| Event lake + hunting (ClickHouse) | Stable | Live ClickHouse on the shipped DDL, with a negative control | Yes, `full` profile |
+| Retro-hunts when new intel arrives | Stable | Live ClickHouse + Kafka with the flag on, with a negative control | Opt-in, `full` profile |
+| 68-hunt YAML library, replayed against tenant events | Stable | Live ClickHouse: scheduled hunts read tenant data and refuse to fall back to the fixture | Yes, `full` profile |
+| SCIM 2.0, white-label, usage metering | Stable | Live Postgres through the real app, with a negative control | Yes |
+| Entity graph (Neo4j) | Stable | Live Neo4j against the production reader, with a negative control | Yes, `full` profile |
+| Governed response actions | Stable | Live socket: permits, refuses, never leaks a refusal, with a negative control | Human-approved only |
+| Alert-triggered playbooks, with a durable approval pause | Stable | Live Postgres: suspend, restart, resume, expiry, with a negative control | Yes — three opt-ins deep, preview by default |
+| Per-tenant detection tuning in the live engine | Stable | Live Postgres: tuning written changes what the engine fires, with a negative control | Yes |
+| Scheduled connectors | Stable | Live scheduler polls a stub vendor into ingest, with a negative control | Yes |
+| UEBA | Stable | Live Postgres: migrations, scoring, persistence, isolation, with a negative control | Yes, `full` profile |
 | Package distribution (npm/PyPI) | Ready, unpublished | `release.yml` builds and packs all eight on every tag | Install from source — the upload is blocked on registry credentials, which is an account action |
 
 ## What AiSOC is not
