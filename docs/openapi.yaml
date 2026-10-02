@@ -2399,6 +2399,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/onboarding/status:
+    get:
+      tags:
+      - onboarding
+      summary: Onboarding Status
+      description: 'What this tenant has set up, derived from its data.
+
+
+        Derived rather than stored. A `tenant.onboarded` boolean drifts the
+
+        moment somebody connects a source through the API, deletes their last
+
+        connector, or restores a backup — and a wizard that insists you are
+
+        finished when your estate is empty is worse than no wizard.'
+      operationId: onboarding_status_api_v1_onboarding_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingStatus'
+      security:
+      - HTTPBearer: []
+  /api/v1/onboarding/sample-data:
+    post:
+      tags:
+      - onboarding
+      summary: Load Sample Data
+      description: 'Push five labelled scenarios through the real pipeline.
+
+
+        Refuses on a tenant that already has real alerts. Sample rows in a
+
+        live queue are indistinguishable from real ones at a glance, and an
+
+        analyst who dismisses a genuine alert because they assumed it was
+
+        sample data is a worse outcome than an evaluator having to use a
+
+        second tenant.'
+      operationId: load_sample_data_api_v1_onboarding_sample_data_post
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SampleDataResponse'
+      security:
+      - HTTPBearer: []
   /api/v1/tenants/me/identity:
     get:
       tags:
@@ -27572,6 +27624,36 @@ components:
       required:
       - status
       title: OnCallUpdateRequest
+    OnboardingStatus:
+      properties:
+        first_run:
+          type: boolean
+          title: First Run
+          description: True when this tenant has no connectors and no alerts. The
+            console routes a first-run tenant to the setup wizard rather than to an
+            empty dashboard.
+        steps:
+          items:
+            $ref: '#/components/schemas/SetupStep'
+          type: array
+          title: Steps
+        connectors:
+          type: integer
+          title: Connectors
+        alerts:
+          type: integer
+          title: Alerts
+        sample_data_loaded:
+          type: boolean
+          title: Sample Data Loaded
+      type: object
+      required:
+      - first_run
+      - steps
+      - connectors
+      - alerts
+      - sample_data_loaded
+      title: OnboardingStatus
     OrganizationCreate:
       properties:
         slug:
@@ -30903,6 +30985,30 @@ components:
       - pattern
       - valid_from
       title: STIXIndicatorWithPush
+    SampleDataResponse:
+      properties:
+        accepted:
+          type: integer
+          title: Accepted
+        rejected:
+          type: integer
+          title: Rejected
+        scenarios:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Scenarios
+        note:
+          type: string
+          title: Note
+      type: object
+      required:
+      - accepted
+      - rejected
+      - scenarios
+      - note
+      title: SampleDataResponse
     SandboxResultResponse:
       properties:
         outcome:
@@ -31236,6 +31342,38 @@ components:
       - rotated_from_id
       - active
       title: ScimTokenOut
+    SetupStep:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        done:
+          type: boolean
+          title: Done
+        why:
+          type: string
+          title: Why
+        href:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Href
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detail
+      type: object
+      required:
+      - key
+      - label
+      - done
+      - why
+      title: SetupStep
+      description: One thing a tenant has or has not done.
     ShadowModeEntry:
       properties:
         alert_class:
