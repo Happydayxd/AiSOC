@@ -40,6 +40,7 @@ from sqlalchemy import and_, func, select
 
 from app.api.v1.deps import AuthUser, require_permission
 from app.core.config import settings
+from app.core.security import ROLE_PERMISSIONS, has_permission
 from app.db.rls import TenantDBSession
 from app.models.responder import AgentApproval
 from app.services.actions_client import ActionsServiceError, decide_action, submit_action
@@ -326,10 +327,9 @@ async def _dispatch_decision(
     permissions = user.effective_permissions()
     principal = {
         "user_id": str(user.user_id),
+        "tenant_id": str(user.tenant_id),
         "email": getattr(user, "email", None),
-        # Singular on this class; sent as a list because that is the shape
-        # `services/actions` reads.
-        "roles": [user.role] if user.role else [],
+        "roles": [user.role] if getattr(user, "role", None) else [],
         "permissions": permissions,
     }
 
