@@ -8681,6 +8681,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/investigations/{run_id}/bundle:
+    get:
+      tags:
+      - investigations
+      summary: Export Evidence Bundle
+      description: 'Export this investigation as a signed, replayable evidence bundle.
+
+
+        Two exports of one run produce identical bytes, so an auditor can
+
+        diff them, re-hash them, and check the signature without trusting
+
+        this endpoint. Prompts travel as digests rather than text, because a
+
+        bundle is the artefact most likely to leave the customer''s control
+
+        and a prompt carries their hostnames and usernames.
+
+
+        Served as a download rather than JSON so what the auditor verifies is
+
+        the same byte sequence the signature was computed over. A client that
+
+        re-serialised a parsed body would change the bytes and the signature
+
+        would stop matching for a reason nobody could see.'
+      operationId: export_evidence_bundle_api_v1_investigations__run_id__bundle_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/kill-switch:
     get:
       tags:
@@ -16098,6 +16147,41 @@ paths:
                 $ref: '#/components/schemas/AgentToolsResponse'
       security:
       - HTTPBearer: []
+  /api/v1/agents/hunt:
+    post:
+      tags:
+      - agents
+      summary: Run Hunt
+      description: 'Plan and run one natural-language hunt for the caller''s tenant.
+
+
+        The tenant comes from the authenticated principal and is never read
+
+        from the body. A caller-supplied tenant on a route like this is the
+
+        shape that has gone wrong here before.'
+      operationId: run_hunt_api_v1_agents_hunt_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentHuntRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentHuntResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/inbox/templates:
     get:
       tags:
@@ -17515,6 +17599,76 @@ components:
       - expires_at
       - url
       title: AdminInviteWire
+    AgentHuntRequest:
+      properties:
+        hypothesis:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Hypothesis
+      type: object
+      required:
+      - hypothesis
+      title: AgentHuntRequest
+      description: 'One natural-language hypothesis to hunt against tenant data.
+
+
+        Named `AgentHuntRequest`, not `HuntRequest`, and the reason is a
+
+        published-contract one rather than a stylistic one.
+
+        `detection_rules.py` already exports a `HuntRequest`, and FastAPI
+
+        resolves a name collision by qualifying **both** models with their
+
+        full module path. So adding a second `HuntRequest` deleted the plain
+
+        `HuntRequest` schema from the spec and renamed the existing one —
+
+        breaking every generated SDK client, for a route that had not
+
+        changed. The openapi-breaking gate caught it.'
+    AgentHuntResponse:
+      properties:
+        hypothesis:
+          type: string
+          title: Hypothesis
+        checked:
+          type: boolean
+          title: Checked
+        matches:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Matches
+          default: []
+        refusals:
+          items:
+            type: string
+          type: array
+          title: Refusals
+          default: []
+        unavailable_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unavailable Reason
+      type: object
+      required:
+      - hypothesis
+      - checked
+      title: AgentHuntResponse
+      description: 'What the hunt found, or why it could not look.
+
+
+        `checked` and `unavailable_reason` are separate fields deliberately.
+
+        A hunt that could not run is not a hunt that found nothing, and
+
+        collapsing the two is how a console shows a reassuring empty result
+
+        for a search that never happened.'
     AgentToolDescriptor:
       properties:
         name:

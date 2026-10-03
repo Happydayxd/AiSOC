@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   playbook-pause-live:
-    name: Playbook pause and Investigation Ledger against real Postgres
+    name: Playbook pause, ledger and evidence bundles against real Postgres
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -86,6 +86,19 @@ jobs:
           poetry install --no-root --no-interaction
           python -m pip install --quiet pytest pytest-asyncio 
 
+      # The evidence-bundle suite drives the **API** service through a
+      # real ASGI client, so it pulls in that service's import chain —
+      # which is not the agents one. It failed on `bcrypt`, reached
+      # through app.core.security, and the fix is the same as the comment
+      # above: install from the service's own lockfile rather than adding
+      # the missing name to a hand-curated list, which only works until
+      # the next import.
+      - name: Install api from its lockfile
+        working-directory: services/api
+        run: |
+          set -euo pipefail
+          poetry install --no-root --no-interaction
+
       # The whole chain, in order.
       #
       # This started as a cherry-picked 001/002/081 — enough for the pause
@@ -129,6 +142,18 @@ jobs:
         env:
           ISOLATION_LEDGER_DSN: ${{ env.PLAYBOOK_DSN }}
         run: python -m pytest ../../tests/isolation/test_ledger_live.py -v --tb=short
+
+      # Parity 3.7. The format's own suite builds bundles from dicts, so
+      # it cannot show that the *route* assembles one from ledger rows —
+      # where `raw_alert` is JSONB, `started_at` is tz-aware, ids are
+      # UUIDs and cost is Numeric, every one of which has a repr JSON
+      # cannot serialise.
+      - name: An evidence bundle exports, verifies and stays tenant-scoped
+        working-directory: services/api
+        env:
+          ISOLATION_BUNDLE_DSN: ${{ env.PLAYBOOK_DSN }}
+          DATABASE_URL: ${{ env.PLAYBOOK_DSN }}
+        run: python -m pytest ../../tests/isolation/test_evidence_bundle_live.py -v --tb=short
 
       # The negative control.
       #
