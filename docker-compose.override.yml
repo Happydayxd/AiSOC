@@ -1,0 +1,9 @@
+services:
+  agents:
+    environment:
+      # Agent tools authenticate to the core API with get_current_user, which
+      # accepts only JWTs or DB-backed aisoc_-prefixed API keys - never the
+      # raw AISOC_AGENTS_SERVICE_TOKEN (that fails JWT decode with 401
+      # 'Could not validate credentials'). Use a minted aisoc_ API key from
+      # .env (scopes: connectors:read, actions:read, lake:query).
+      AISOC_AGENTS_API_KEY: ${AISOC_AGENTS_API_KEY:-}
