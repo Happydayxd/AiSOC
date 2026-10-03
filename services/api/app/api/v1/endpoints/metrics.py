@@ -37,6 +37,7 @@ from app.models.case import Case
 from app.models.connector import Connector
 from app.models.detection_rule import DetectionRule
 from app.models.remediation import RemediationGateLog
+from app.services import case_status
 from app.services.resolution_time import (
     MTTR_WINDOW,
     tenant_case_mttr_minutes,
@@ -282,14 +283,27 @@ async def get_dashboard_metrics(
     )
 
     # ── Case counts ───────────────────────────────────────────────────────────
-    open_cases_q = await db.scalar(select(func.count()).where(and_(Case.tenant_id == tenant_id, Case.status == "open")))
-    in_progress_q = await db.scalar(select(func.count()).where(and_(Case.tenant_id == tenant_id, Case.status == "in_progress")))
+    # These filtered `"open"` and `"in_progress"`, neither of which the
+    # console's state machine can produce, so both counters were
+    # structurally zero rather than merely empty. The vocabulary now comes
+    # from one place.
+    open_cases_q = await db.scalar(
+        select(func.count()).where(and_(Case.tenant_id == tenant_id, Case.status.in_(case_status.OPEN_STATUSES)))
+    )
+    in_progress_q = await db.scalar(
+        select(func.count()).where(and_(Case.tenant_id == tenant_id, Case.status.in_(case_status.WORKING_STATUSES)))
+    )
+    # Closed, not resolved, and clocked off `closed_at` rather than
+    # `updated_at`. `resolved` is an intermediate state — a resolved case
+    # is still on a queue — and `updated_at` moves whenever anyone edits
+    # the case, so the old pair counted the wrong rows at the wrong time.
     resolved_week_q = await db.scalar(
         select(func.count()).where(
             and_(
                 Case.tenant_id == tenant_id,
-                Case.status == "resolved",
-                Case.updated_at >= week_start,
+                Case.status.in_(case_status.CLOSED_STATUSES),
+                Case.closed_at.isnot(None),
+                Case.closed_at >= week_start,
             )
         )
     )
@@ -478,7 +492,14 @@ async def get_soc_metrics(
     )
     mttd_q = await db.scalar(select(func.avg(func.extract("epoch", Alert.first_seen_at - Alert.created_at) / 3600)).where(mttd_filters))
     mttd_samples = int(await db.scalar(select(func.count()).where(mttd_filters)) or 0)
-    mttd_hours = float(mttd_q or 0.0)
+    # `None`, not `0.0`, when nothing in the window was acknowledged. The
+    # sample count below already told a careful reader the figure was empty,
+    # but the value itself read as instant acknowledgement to everyone else.
+    # 0.0 here is explicitly *not* a measurement: `mttd_sample_count`
+    # below carries the denominator, and the console renders 'not
+    # measured' when it is zero. See the comment on that field for why
+    # the mean is not nullable.
+    mttd_hours = float(mttd_q) if mttd_q is not None and mttd_samples else 0.0
 
     # ── MTTR ──────────────────────────────────────────────────────────────────
     # Mean time from case open to case close, over the shared window — the same

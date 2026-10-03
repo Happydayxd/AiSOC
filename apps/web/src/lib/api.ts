@@ -2506,6 +2506,13 @@ export interface InsightTile {
   key: string;
   label: string;
   value: number;
+  /**
+   * Rows the mean was averaged over. `0` means the window measured
+   * nothing, so `value` is a placeholder rather than a result — the
+   * console renders "not measured" instead. Optional so a server that
+   * predates the field is handled without a cast.
+   */
+  sample_count?: number;
   unit: 'hours' | 'pct' | 'count' | 'usd' | 'hours_saved';
   previous_value: number;
   delta_pct: number | null;
@@ -4420,6 +4427,12 @@ export interface DetectionProposalEvalVerdict {
   max_regression_pp?: number;
   regressed?: boolean;
   passed?: boolean;
+  /**
+   * Written only by `POST /{id}/evaluate-rule`. `/decide` answers HTTP
+   * 412 without it, which is why the Approve button could not succeed
+   * before the console had a caller for that route.
+   */
+  candidate_rule?: { passed?: boolean; ran_at?: string };
 }
 
 export interface DetectionProposal {
@@ -4439,6 +4452,10 @@ export interface DetectionProposal {
   tags: string[];
   status: DetectionProposalStatus;
   eval_result: DetectionProposalEvalVerdict | Record<string, never>;
+  /** What this rule claims to catch, carried so the approval gate can replay it. */
+  positive_fixtures?: Array<Record<string, unknown>>;
+  /** What it claims to ignore. Empty means the proposal makes no such claim. */
+  negative_fixtures?: Array<Record<string, unknown>>;
   review_comments: Array<{
     actor_id: string;
     actor_email?: string;
@@ -4511,6 +4528,34 @@ export const detectionProposalsApi = {
     request<DetectionProposal>(`/api/v1/detection-proposals/${id}/eval`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /**
+   * Run the candidate rule body against its own fixtures.
+   *
+   * This had no web client at all, and it is the gate `/decide` requires:
+   * approving returns HTTP 412 unless `eval_result.candidate_rule` exists,
+   * and this route is the only thing that writes that key. So the console
+   * rendered an Approve button that could not succeed, and the gate was
+   * reachable only by calling the API directly.
+   */
+  evaluateRule: (
+    id: string,
+    body: {
+      positive_fixtures: Array<Record<string, unknown>>;
+      negative_fixtures: Array<Record<string, unknown>>;
+    },
+  ) =>
+    request<DetectionProposal>(`/api/v1/detection-proposals/${id}/evaluate-rule`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Replay a candidate rule over real tenant events in the lake. */
+  backtestProposal: (id: string, body?: { days?: number; limit?: number }) =>
+    request<Record<string, unknown>>(`/api/v1/detection-proposals/${id}/backtest`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
     }),
 
   // Triggers a synchronous run of `scripts/run_evals.py` server-side and
