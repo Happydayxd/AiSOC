@@ -2256,6 +2256,7 @@ export const ledgerApi = {
 // ─── Metrics / Dashboard ─────────────────────────────────────────────────────
 
 export interface DashboardMetrics {
+  period?: '1h' | '24h' | '7d' | '30d';
   alerts: {
     total: number;
     new: number;

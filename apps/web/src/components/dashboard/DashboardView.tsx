@@ -29,6 +29,8 @@ import { FunnelKpiBar } from './FunnelKpiBar';
 import { EfficiencyReport } from './EfficiencyReport';
 import { PipelineHealth } from './PipelineHealth';
 import { demoFallback } from '@/lib/demoFallback';
+import { useTimeWindow } from '@/components/layout/TimeWindowProvider';
+import { TIME_WINDOW_LONG_LABEL, TIME_WINDOW_SHORT_LABEL } from '@/lib/timeWindow';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 
@@ -534,8 +536,13 @@ export function DashboardView() {
   const topMitre = metrics?.topMitre ?? [];
   const activeSourceCount = sources.filter((s) => s.status === 'active').length;
 
+  const periodLabel = TIME_WINDOW_SHORT_LABEL[metrics?.period ?? period];
+  const trendTimeFmt =
+    (metrics?.period ?? period) === '7d' || (metrics?.period ?? period) === '30d'
+      ? 'MMM d'
+      : 'HH:mm';
   const trendData = (metrics?.alertsTrend ?? []).map((d) => ({
-    time: format(new Date(d.timestamp), 'HH:mm'),
+    time: format(new Date(d.timestamp), trendTimeFmt),
     count: d.count,
   }));
 
@@ -591,7 +598,7 @@ export function DashboardView() {
             <MetricCard
               label="Active Alerts"
               value={metrics.alerts.active ?? metrics.alerts.total}
-              sub={`${metrics.alerts.total} total in period`}
+              sub={`${metrics.alerts.total} in last ${periodLabel}`}
               color="blue"
             />
             <MetricCard
@@ -648,8 +655,8 @@ export function DashboardView() {
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2 bg-gray-900/60 border border-gray-800/60 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-medium text-gray-300">Alert Volume (24h)</h3>
-            <span className="text-xs text-gray-500">Last 24 hours</span>
+            <h3 className="text-sm font-medium text-gray-300">Alert Volume ({periodLabel})</h3>
+            <span className="text-xs text-gray-500">Last {periodLabel}</span>
           </div>
           {trendData.length > 0 ? (
             <RechartsArea data={trendData} />
@@ -658,8 +665,10 @@ export function DashboardView() {
               error={metricsError}
               pending={metricsPending}
               onRetry={retryMetrics}
-              emptyTitle="No alerts in the last 24 hours"
-              emptyDescription="The volume curve plots hourly alert counts once alerts start arriving."
+              emptyTitle={`No alerts in the last ${TIME_WINDOW_LONG_LABEL[
+                metrics?.period ?? period
+              ].replace(/^Last /, '')}`}
+              emptyDescription="The volume curve plots alert counts once alerts start arriving."
             />
           )}
         </div>
