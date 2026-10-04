@@ -116,6 +116,17 @@ describe('FunnelKpiBar', () => {
     swrLoading.clear();
   });
 
+  it('renders "no baseline" when the API reports a null delta', () => {
+    // Previous window empty -> API returns null (not a dressed-up 0.0, and
+    // never the double-scaled -9375% of the old fraction*100 rendering bug).
+    swrData.set(FUNNEL_KEY, {
+      ...SAMPLE_FUNNEL,
+      deltas: { ...SAMPLE_FUNNEL.deltas, events_of_interest: null },
+    });
+    render(<FunnelKpiBar period="24h" />);
+    expect(screen.getByText('no baseline')).toBeInTheDocument();
+  });
+
   it('renders six tiles with formatted values and signed deltas', () => {
     swrData.set(FUNNEL_KEY, SAMPLE_FUNNEL);
     render(<FunnelKpiBar period="24h" />);
