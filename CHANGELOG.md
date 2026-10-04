@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A revoked session kept the graph WebSocket open** ([GHSA-25fh-rxp8-67j8]).
+  `_authenticate_ws` resolved its JWT by hand, under a docstring claiming *"we
+  reuse the same helpers `get_current_user` uses so the auth contract is
+  identical"*. It did not: no session-revocation check against
+  `users.sessions_revoked_at`, and no `resolve_permissions`. So a
+  de-provisioned principal kept a live subscription to the tenant graph stream
+  for the remaining lifetime of its access token while the **same token** was
+  answered `401 Session revoked` over HTTP, and `require_permission` fell back
+  to the static role map because `resolved_permissions` was `None` -- where a
+  wildcard role passes unconditionally. Both paths now call one
+  `resolve_jwt_principal`; two implementations of one security contract
+  diverge, and the only question is when.
+- **An unverified email claim could take over any account in the tenant**
+  ([GHSA-qjjc-q2h2-56cg]). `provision_user` selected the local account with
+  `WHERE tenant_id = :t AND lower(email) = lower(:e)`, and the word
+  `email_verified` appeared **nowhere** in the OIDC path. An attacker able to
+  authenticate to the tenant's configured provider with an account carrying a
+  victim's unverified address received a token minted for the victim's local
+  id -- and with database-backed RBAC the API then resolved the *victim's*
+  `user_roles`, so a low-privilege group mapping did not contain it.
+
+  Matching on email was deliberate and stays, because an organisation moving
+  identity provider keeps its addresses and would otherwise get a second
+  account per person. It is now guarded on both sides: an existing account can
+  only be claimed when the provider affirmatively asserts `email_verified`
+  (absent reads as unverified -- OIDC makes the claim optional, and "did not
+  say" is not "said yes"), and the subject is bound to the account it signs in
+  as, per connection, in `aisoc_sso_identities` (migration 089). A second
+  subject presenting a bound account's address is refused even with a verified
+  email. An IdP migration is a new connection, so bindings start empty and
+  everyone re-claims their own account on first sign-in -- exactly the
+  behaviour the email match existed to provide. SAML passes verified: the
+  assertion is signed, and the signature is the assurance OIDC uses the claim
+  to provide.
+
+  The identity binding also has to set the tenant context before it writes.
+  A sign-in callback has no authenticated principal, so the session it arrives
+  on carries none, and the new table's `WITH CHECK` has no
+  `current_tenant_id() IS NULL` escape -- deliberately, because an unscoped
+  session that can insert any `tenant_id` is not a control. `complete_sso_login`
+  sets it from the connection, which is the only thing that decides the tenant
+  on this path. Without it the binding is refused under the DML-only
+  `aisoc_app` role and SSO login fails outright; CI found that because it runs
+  as that role, and a local database connected as the owner cannot, since RLS
+  does not apply to the owner at all.
+
+[GHSA-25fh-rxp8-67j8]: https://github.com/beenuar/AiSOC/security/advisories/GHSA-25fh-rxp8-67j8
+[GHSA-qjjc-q2h2-56cg]: https://github.com/beenuar/AiSOC/security/advisories/GHSA-qjjc-q2h2-56cg
+
 ### BREAKING
 
 - **`POST /api/v1/detection-loop/suggest`, `GET /api/v1/detection-loop/suggestions`
