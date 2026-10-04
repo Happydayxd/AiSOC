@@ -110,14 +110,22 @@ conditional `numpy` pins collide into an unresolvable install. Parse with
 
 ## Wave 5: Hunting, intel, sandbox and operations wiring
 
-- [ ] **5.1** Retro-hunts can be turned on
-- [ ] **5.2** KEV exposure gets data
-- [ ] **5.3** Hunts over the lake
-- [ ] **5.4** Sandbox and air-gap settings reach the API
-- [ ] **5.5** Release channel does not cross a major
-- [ ] **5.6** Upgrade fixture does not insert into the renamed `cases` table
-- [ ] **5.7** Chaos and HA run live in CI
-- [ ] **5.8** Performance honesty
+- [x] **5.1** Retro-hunts can be turned on
+  - Both halves built. `RETRO_HUNT_ENABLED` now passes through compose and is documented in `.env.example`, defaulting off; `GET`/`PUT /api/v1/retro-hunts/settings` plus a Settings panel give the tenant somewhere to opt in. Nine live tests against real Postgres; reverting the upsert to a plain UPDATE fails four.
+- [x] **5.2** KEV exposure gets data
+  - Connector now fetches per-asset findings plus plugin CVEs (capped at 60 lookups) and the connectors service writes `asset_vulnerabilities` directly -- not through the API, because the service principal is deliberately read-only. Seven live end-to-end tests. Creating the data first time exposed three more defects that had never run: a case status the CHECK rejects, two ORM models naming tables no migration creates, and a task status the CHECK rejects.
+- [x] **5.3** Hunts over the lake
+  - All three halves done. `clickhouse-driver` added to `services/agents` (lock regenerated with the pinned poetry 2.4.1); CLICKHOUSE_* mirrored onto the agents service in compose; and the field mapping went from **0 of 114** corpus fields resolvable to **114 of 114**, via `source` -> `connector_type` plus a parameterised `raw_payload` extraction covering the `EventData` and `System` nestings. README row narrowed from "replayed" to "compiled against", with the reason.
+- [x] **5.4** Sandbox and air-gap settings reach the API
+  - All four defects fixed: compose now passes `AISOC_AIRGAPPED` plus the CAPEv2 and MalwareAnalyzer settings to `api`; the air-gap overlay sets the flag on `api`, `threatintel` and `connectors` as well as `agents`; phishing records "no provider configured, this is not a clean verdict" instead of skipping an empty block; and the agent tool names a 403 as an authorisation problem with its three candidates rather than asserting air-gap mode. Both compose paths validate.
+- [x] **5.5** Release channel does not cross a major
+  - The channel now tracks which major it is on, resolved from the registry, so a minor cannot carry it across a major. Test replays release ladders rather than single releases. Helm chart gains the `stable` channel it was scoped with.
+- [x] **5.6** Upgrade fixture does not insert into the renamed `cases` table
+  - Fixture, before-snapshot and archive assertion all resolve the case table at run time. Reproduced against a fully-migrated database first: `relation "cases" does not exist`.
+- [x] **5.7** Chaos and HA run live in CI
+  - A `fusion-restart` job now runs the grader live on the weekly `chaos.yml` schedule -- 3,000 events, fusion destroyed at the halfway mark, graded against the `alerts` table for duplicates as well as loss. The claim row moves off its "not on a CI trigger" caveat: the three-node cluster it cited is not needed, because the property under test is the consumer's commit discipline and the sink's idempotency, and one replica killed mid-stream exercises both.
+- [x] **5.8** Performance honesty
+  - Thresholds now derived from the published compose steady-state figures (floor 11 = 7.3x below the published 80.1 alerts/s; ceiling 21,000 ms = 19.2x above the published 1,091 ms p95) instead of a constant 5 / 120,000 sitting 16x and 110x away. `check_perf_results.py` gained `REQUIRED_DEPLOYMENTS` and `MAX_RESULT_AGE_DAYS`. Both uncalled scripts are wired: the harness now records the load shape the claims tool requires, `--from-harness` translates it, and the one remaining gap (the harness does not measure detection coverage) is an explicit `--allow` with the problem still printed, not an absorbed failure.
 
 ## Wave 6: Retract what is not built
 

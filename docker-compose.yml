@@ -480,6 +480,30 @@ services:
       # is the container_name, not the DNS name on this network.
       AISOC_ACTIONS_BASE_URL: http://actions:8085
       AISOC_ACTIONS_SERVICE_TOKEN: ${AISOC_ACTIONS_SERVICE_TOKEN:-}
+      # Retro-hunt sweeps. `main.py` starts the consumer only when this is
+      # true, and compose passes only the variables it names -- so while this
+      # was absent, setting it in the host environment did nothing and the
+      # consumer could not start on any compose deployment.
+      #
+      # Off by default and deliberately: a sweep reads back over a tenant's
+      # history, which is a cost and a privacy decision, so it waits for both
+      # the operator here and the tenant in `retro_hunt_settings`.
+      RETRO_HUNT_ENABLED: "${RETRO_HUNT_ENABLED:-false}"
+      # File analysis and the air-gap posture. Compose passes only the
+      # variables it names, so while these were absent an operator with a
+      # CAPEv2 appliance had no way to point the product at it, and an
+      # air-gapped deployment had no way to tell the API -- which reads
+      # AISOC_AIRGAPPED in nine modules including the sandbox registry, the
+      # STIX publisher and three query runners.
+      #
+      # Unset means the registry serves the mock provider, which knows
+      # nothing and now says so rather than returning an empty result a
+      # reader takes for a clean verdict.
+      AISOC_AIRGAPPED: "${AISOC_AIRGAPPED:-false}"
+      AISOC_CAPEV2_BASE_URL: "${AISOC_CAPEV2_BASE_URL:-}"
+      AISOC_CAPEV2_API_TOKEN: "${AISOC_CAPEV2_API_TOKEN:-}"
+      MALWAREANALYZER_BASE_URL: "${MALWAREANALYZER_BASE_URL:-}"
+      MALWAREANALYZER_API_KEY: "${MALWAREANALYZER_API_KEY:-}"
     # Phase 2.6 — use /readyz, not /health, so the orchestrator
     # only routes traffic once the lifespan has finished wiring
     # Postgres, Redis, Kafka, Qdrant, and Neo4j. (Not OpenSearch: this
@@ -754,6 +778,16 @@ services:
       # each logging its own `no_service_token` warning and returning empty.
       # `make env` generates it; it must match the value on `api` below.
       AISOC_AGENTS_SERVICE_TOKEN: ${AISOC_AGENTS_SERVICE_TOKEN:-}
+      # The hunting agent reads the ClickHouse lake, and this block named
+      # none of it -- so in the `full` profile the agent had a driver-less
+      # image and no address to point it at. Mirrors the api service above,
+      # because both read the same lake and a second set of defaults is a
+      # second thing to drift.
+      CLICKHOUSE_HOST: "${CLICKHOUSE_HOST:-clickhouse}"
+      CLICKHOUSE_PORT: "${CLICKHOUSE_PORT:-9000}"
+      CLICKHOUSE_DATABASE: "${CLICKHOUSE_DATABASE:-aisoc}"
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER:-aisoc}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:-aisoc_dev_secret}"
     networks:
       - aisoc
     restart: unless-stopped

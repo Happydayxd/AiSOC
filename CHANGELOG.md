@@ -22,6 +22,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   governed equivalent is `POST /api/v1/detection-proposals`, which writes to a
   real table and carries separation of duties.
 
+### Added
+
+- **Retro-hunts can be turned on.** `RETRO_HUNT_ENABLED` decides whether the
+  consumer runs, and it appeared in no compose file and no `.env.example` --
+  compose passes only the variables it names, so setting it in a shell did
+  nothing and the consumer could not start on any compose deployment. The
+  tenant's half, `retro_hunt_settings.enabled`, defaults to FALSE under a
+  comment reading "Off until a tenant asks", and there was nowhere to ask: no
+  route and no console surface touched the table, so opting a tenant in meant
+  an UPDATE issued by hand. Both halves now exist --
+  `GET`/`PUT /api/v1/retro-hunts/settings` and a panel in Settings -> Autonomy
+  guardrails -- and both switches must be on before anything is swept. The
+  sweep budget is deliberately read-only through the tenant surface: it is the
+  operator's ceiling on what one tenant can cost the deployment.
+- **The Helm chart has the `stable` channel the release policy promised.** It
+  was scoped as "a `stable` image tag and chart channel" and only the image
+  half was built, so `helm install` with no `--version` resolved to whatever
+  the registry handed back. The chart channel follows the **chart's** major,
+  not the application's, because the break it protects against is a
+  values-schema break.
+
+### Changed
+
+- **Retracted claims for schema that nothing reads.** Migration 084's
+  detection lifecycle (`environment`, `shadow_until`, `detection_rule_versions`,
+  `detection_shadow_matches`) and migration 087's enterprise IAM
+  (`workload_identities`, `privilege_grants`, `permission_conditions`,
+  `narrow_by_conditions`) each have **zero readers** in `services/`. A rule set
+  to `dev` still raises alerts, a future `shadow_until` still pages, and there
+  is no rollback route. Separation of duties on detection proposals is real and
+  the claim for it stands. The docs page, README and changelog now say which
+  half is which.
+- **Three docs-portal overclaims corrected.** Qdrant holds the MITRE technique
+  corpus for lookup, which is a reference index and not agent memory; there is
+  no coverage advisor that recommends rules for uncovered techniques and no
+  one-click generation route; and `GET /taxii/collections` calls `_demo_only()`
+  and returns a fixed list, so TAXII collection management is demo-only and the
+  intel sharing is one-way.
+- **The phishing playbook no longer claims a retraction it cannot perform.**
+  Its "Retract phishing email fleet-wide" step posts to `${EMAIL_GATEWAY_URL}`,
+  which no compose file or `.env.example` sets, under `on_failure: continue`.
+  The step and the playbook description now say the message is not retracted
+  when the gateway is unconfigured.
+
 ### Removed
 
 - **`POST /api/v1/detection-loop/suggest` and its two sibling routes.** They
@@ -54,31 +98,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/detection-proposals/{id}/decide`, so an approver clicking through would
   have written a rule with no detection logic into the engine. `/decide` now
   refuses such a body, and the auto-tuner no longer seeds the queue by default.
+- **`stable` crossed a major on its own, which is how it reached v12, v13 and
+  v15.** The rule refused `vX.0.0` and nothing else, so `v16.0.0` correctly
+  declined the tag and `v16.1.0` -- a minor -- took it the next day, carrying
+  every deployment that pulls `stable` across the breaking change with no
+  operator action. The release workflow now resolves which major the channel is
+  *on*, from the registry rather than the tree, and moves it only within that
+  major. The test that backed the claim asked one release at a time, which is
+  why it always answered correctly; it now replays whole release ladders.
+- **The upgrade test would have broken the moment the previous release became
+  16.x.** `scripts/upgrade_fixture.sql` inserted into `cases`, which migration
+  083 renames, and the workflow's before-snapshot and archive assertion pinned
+  names that exist on exactly one side of that rename. All three now resolve
+  the table at run time and say which case was taken.
+- **The OpenAPI drift message named no cause.** It said only "out of date, run
+  `export_openapi.py`", which is the command that produced the rejected file.
+  The usual cause is a generator version disagreeing with the lockfile --
+  pydantic 2.13 emits `additionalProperties: true` where 2.8 did not, 252 lines
+  of diff across the spec and nothing to do with anyone's change -- so it now
+  names the mismatch, prints the `pip install` that fixes it, and shows the
+  first differing paths.
+- **The chaos grader behind "a fusion replica can be destroyed mid-stream" had
+  run live once, by hand.** `chaos.yml` ran only its `--self-test`, which
+  exercises the grading arithmetic against fixtures and proves nothing about
+  fusion, and `integration.yml`'s kill test posts a **single** event while
+  fusion is down and checks only for loss -- one event cannot show a duplicate,
+  and duplicates are the half an at-least-once consumer gets wrong. A
+  `fusion-restart` job now runs on the weekly schedule: it boots the spine,
+  pushes 3,000 events, destroys the fusion container at the halfway mark, and
+  asserts against the `alerts` table that every accepted sequence number
+  appears exactly once. The claim row's caveat said this needed a three-node
+  cluster; it does not, because the property under test is the consumer's
+  commit discipline and the sink's idempotency, and one replica killed
+  mid-stream exercises both.
+- **Not one of the 68 shipped hunts could be compiled against the lake.** The
+  README publishes the library as **Stable**, "replayed against tenant events".
+  Measured against `lake_hunt.py`'s field map the corpus used 114 distinct
+  field names and **zero** resolved to a lake column -- all 243 field uses were
+  reported unsupported, so every hunt returned either an unfiltered table or
+  nothing. Two causes: every one of the 68 filters on a bare `source`, which
+  the lake stores as `connector_type` and the map did not mention; and the
+  other 113 are vendor names like `EventID` and `CommandLine` that have no
+  column but which the stored payload carries, and nothing reached into
+  `raw_payload`. Both are fixed and all 114 now compile, through a column or a
+  payload extraction that also tries the `EventData` and `System` nestings
+  Windows uses -- the same nesting that once made 2,173 Sigma rules unable to
+  fire. The field name is bound as a query parameter and additionally refused
+  unless it is a plain identifier. Separately, the agents image shipped with no
+  ClickHouse driver (so `lake-live.yml` installed one by hand, proving
+  something about a package set the published image does not have) and the
+  `full` profile gave the agents container no ClickHouse address at all. The
+  README row now says "compiled against", because a payload extraction finds a
+  field if the event carries it, which is a property of the connector's output
+  rather than of this compiler.
+- **File analysis could not be configured, and when it was unconfigured the
+  product did not say so.** Compose passed neither `AISOC_AIRGAPPED` nor any
+  sandbox provider setting to the `api` service, and compose passes only the
+  variables it names -- so an operator with a CAPEv2 appliance had no way to
+  point the product at it. The air-gap overlay set the flag on `agents` alone,
+  while `AISOC_AIRGAPPED` is read by seventeen modules across four services
+  including the API's STIX publisher, both query runners and the sandbox
+  registry: a deployment that believed it was air-gapped had one service that
+  knew. And with only the mock provider answering, `_attachment_indicators` did
+  `if not block: continue`, so a phishing verdict carried **no attachment
+  indicator at all** -- which a reader takes for "checked and clean" rather
+  than "not checked". It now records that no provider is configured and says
+  plainly that this is not a clean verdict. Separately, the agent's sandbox
+  tool reported every 403 as *"Air-gapped mode permits local analysis providers
+  only"*, when a 403 is equally an expired token, a revoked scope or a tenant
+  policy -- so it named the deployment's networking posture while the fix was a
+  credential.
+- **The performance gate could not have caught a regression.** It asserted a
+  floor of 5 events/s and a ceiling of 120,000 ms against published figures of
+  **80.1 alerts/s** and a **1,091 ms** p95 -- 16x below and 110x above -- so a
+  regression had to be catastrophic by two orders of magnitude before the job
+  that said it was measuring noticed. The thresholds are now derived from those
+  figures (7.3x and 19.2x), with the arithmetic in the workflow and a test that
+  parses both the workflow and the published page and fails if the ratio drifts
+  in either direction. `check_perf_results.py` accepted a results directory
+  covering one of the two published deployments and had no freshness bound at
+  all; it now requires both and caps the newest result at 400 days.
+  `scripts/perf/load_profiles.py` and `scripts/perf/throughput_claims.py` had
+  no caller anywhere and could not be pointed at a real run, because the
+  harness recorded none of the context they require. The harness now records
+  the load's shape -- batch size, workers, target rate, host count, commit --
+  and `--from-harness` translates a result into claim shape, taking the
+  missing-context findings from eight to zero. The one remaining gap is stated
+  rather than absorbed: the harness does not measure what fraction of pushed
+  events the rule engine evaluated, so that problem is tolerated by an explicit
+  `--allow` naming it and is still printed on every run.
+- **KEV exposure had no data on any deployment, and three further defects sat
+  behind it.** `asset_vulnerabilities` had exactly one writer in the tree --
+  `POST /api/v1/assets/vulnerabilities`, a route a human calls by hand -- and
+  the Tenable connector, the only vulnerability scanner AiSOC integrates,
+  modelled its findings as alerts. `_tenant_has_vulnerability_data` exists to
+  tell "you are not exposed" apart from "nobody has told me what you run", so
+  with an empty table KEV exposure answered the second, forever. The data was
+  not merely unwritten: `fetch_alerts` calls `/workbenches/vulnerabilities`,
+  which returns plugin aggregates carrying neither a CVE nor an asset, and
+  `normalize()` sets `host: None`. The connector now fetches per-asset findings
+  and the plugin details that carry CVEs, capped at 60 plugin lookups so a
+  large workbench cannot turn a 5-minute schedule into a denial of service
+  against the customer's own scanner, and the connectors service writes the
+  rows itself -- not via the API, because the service principal is deliberately
+  read-only and widening it to close this would undo that for every route.
 
-### Changed
-
-- **Retracted claims for schema that nothing reads.** Migration 084's
-  detection lifecycle (`environment`, `shadow_until`, `detection_rule_versions`,
-  `detection_shadow_matches`) and migration 087's enterprise IAM
-  (`workload_identities`, `privilege_grants`, `permission_conditions`,
-  `narrow_by_conditions`) each have **zero readers** in `services/`. A rule set
-  to `dev` still raises alerts, a future `shadow_until` still pages, and there
-  is no rollback route. Separation of duties on detection proposals is real and
-  the claim for it stands. The docs page, README and changelog now say which
-  half is which.
-- **Three docs-portal overclaims corrected.** Qdrant holds the MITRE technique
-  corpus for lookup, which is a reference index and not agent memory; there is
-  no coverage advisor that recommends rules for uncovered techniques and no
-  one-click generation route; and `GET /taxii/collections` calls `_demo_only()`
-  and returns a fixed list, so TAXII collection management is demo-only and the
-  intel sharing is one-way.
-- **The phishing playbook no longer claims a retraction it cannot perform.**
-  Its "Retract phishing email fleet-wide" step posts to `${EMAIL_GATEWAY_URL}`,
-  which no compose file or `.env.example` sets, under `on_failure: continue`.
-  The step and the playbook description now say the message is not retracted
-  when the gateway is unconfigured.
-
-### Fixed
+  Creating the data for the first time then exposed three things downstream
+  that had never run: KEV exposure opened its case with `status="open"`, which
+  `aisoc_cases_status_check` rejects; `CaseTask` named `case_tasks` and
+  `CaseTimeline` named `case_timeline`, neither of which any migration creates
+  (the real tables are `aisoc_case_tasks` and `case_timeline_events`, with four
+  declared columns that do not exist); and the task status `"pending"` is not
+  one of the three `aisoc_case_tasks_status_check` allows. All three were
+  reachable only from data the product had no way to produce, which is why
+  nothing had noticed.
 
 - **The MCP client could not complete a single real call, and every tool it
   offered a model was rejected by the provider (fix pass, wave 2).**
