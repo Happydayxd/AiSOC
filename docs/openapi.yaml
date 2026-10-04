@@ -3845,7 +3845,7 @@ paths:
         required: false
         schema:
           type: boolean
-          default: true
+          default: false
           title: Create Proposals
       responses:
         '200':
@@ -12863,104 +12863,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
-  /api/v1/detection-loop/suggest:
-    post:
-      tags:
-      - detection_rules
-      - detection_loop
-      summary: Draft Sigma improvement for a FP alert
-      description: 'Retrieve the triggering rule + alert evidence, then draft a Sigma
-        improvement.
-
-
-        Tenant isolation: the alert and rule lookups are scoped to ``user.tenant_id``
-
-        so a caller cannot pull another tenant''s evidence by guessing an ``alert_id``.
-
-        ``TenantDBSession`` also sets the Postgres RLS context for defense in depth.'
-      operationId: suggest_fp_fix_api_v1_detection_loop_suggest_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SuggestRequest'
-        required: true
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuggestionResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
-  /api/v1/detection-loop/suggestions:
-    get:
-      tags:
-      - detection_rules
-      - detection_loop
-      summary: List LLM-drafted Sigma suggestions
-      description: 'List suggestions drafted by *this* tenant only.
-
-
-        Tenant isolation: ``_SUGGESTIONS`` is process-wide and shared across all
-
-        tenants. Filtering on the stored ``tenant_id`` ensures one tenant never
-
-        sees another tenant''s drafts, rule names, or evidence-derived rationale.'
-      operationId: list_suggestions_api_v1_detection_loop_suggestions_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuggestionListResponse'
-      security:
-      - HTTPBearer: []
-  /api/v1/detection-loop/suggestions/{suggestion_id}:
-    get:
-      tags:
-      - detection_rules
-      - detection_loop
-      summary: Get one Sigma suggestion
-      description: 'Return one suggestion if and only if it belongs to the caller''s
-        tenant.
-
-
-        Tenant isolation: a cross-tenant lookup returns 404 (not 403) to avoid
-
-        leaking the existence of a suggestion that belongs to another tenant.'
-      operationId: get_suggestion_api_v1_detection_loop_suggestions__suggestion_id__get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: suggestion_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Suggestion Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuggestionResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/nl-query/translate:
     post:
       tags:
@@ -32591,84 +32493,6 @@ components:
       required:
       - url
       title: SubmitUrlRequest
-    SuggestRequest:
-      properties:
-        alert_id:
-          type: string
-          format: uuid
-          title: Alert Id
-          description: ID of the FP-flagged alert.
-        analyst_note:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Analyst Note
-          description: Free-text note explaining why this is a FP.
-      type: object
-      required:
-      - alert_id
-      title: SuggestRequest
-    SuggestionListResponse:
-      properties:
-        suggestions:
-          items:
-            $ref: '#/components/schemas/SuggestionResponse'
-          type: array
-          title: Suggestions
-        total:
-          type: integer
-          title: Total
-      type: object
-      required:
-      - suggestions
-      - total
-      title: SuggestionListResponse
-    SuggestionResponse:
-      properties:
-        suggestion_id:
-          type: string
-          format: uuid
-          title: Suggestion Id
-        alert_id:
-          type: string
-          format: uuid
-          title: Alert Id
-        base_rule_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Base Rule Id
-        draft_rule_name:
-          type: string
-          title: Draft Rule Name
-        draft_sigma_yaml:
-          type: string
-          title: Draft Sigma Yaml
-        rationale:
-          type: string
-          title: Rationale
-        proposal_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Proposal Id
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-      type: object
-      required:
-      - suggestion_id
-      - alert_id
-      - base_rule_id
-      - draft_rule_name
-      - draft_sigma_yaml
-      - rationale
-      - proposal_id
-      - created_at
-      title: SuggestionResponse
     SuppressRequest:
       properties:
         reason:
