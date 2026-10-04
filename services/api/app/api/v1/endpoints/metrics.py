@@ -101,6 +101,9 @@ class SourceThreat(BaseModel):
 
 
 class DashboardMetrics(BaseModel):
+    # Echo of the window volume metrics were scoped to, so the console can
+    # label panels from the payload instead of its own guess.
+    period: str = "24h"
     alerts: AlertMetrics
     cases: CaseMetrics
     sources: list[SourceStat]
@@ -322,6 +325,15 @@ async def get_dashboard_metrics(
     window = _FUNNEL_PERIOD_MAP[period]
     week_start = now - window
 
+    _period_map: dict[str, tuple[timedelta, str]] = {
+        "1h": (timedelta(hours=1), "minute"),
+        "24h": (timedelta(hours=24), "hour"),
+        "7d": (timedelta(days=7), "day"),
+        "30d": (timedelta(days=30), "day"),
+    }
+    window_delta, trend_trunc = _period_map[period]
+    window_start = now - window_delta
+
     # ── Alert counts ──────────────────────────────────────────────────────────
     # Unresolved only. See `_count_alerts_by_status`: these tiles are labelled
     # "Active" and "Require immediate action", and counting the historical
@@ -405,7 +417,7 @@ async def get_dashboard_metrics(
     # Count alerts per connector_type
     source_counts_rows = (
         await db.execute(
-            select(Alert.connector_type, func.count().label("cnt")).where(Alert.tenant_id == tenant_id).group_by(Alert.connector_type)
+            select(Alert.connector_type, func.count().label("cnt")).where(and_(Alert.tenant_id == tenant_id, _in_window)).group_by(Alert.connector_type)
         )
     ).all()
     source_count_map: dict[str, int] = {row.connector_type: row.cnt for row in source_counts_rows if row.connector_type}
@@ -432,7 +444,7 @@ async def get_dashboard_metrics(
     # jsonb_array_elements_text + GROUP BY in the same SELECT 500s on some
     # Postgres builds.
     tactic_rows = (
-        await db.execute(select(Alert.mitre_tactics).where(and_(Alert.tenant_id == tenant_id, Alert.mitre_tactics.isnot(None))))
+        await db.execute(select(Alert.mitre_tactics).where(and_(Alert.tenant_id == tenant_id, Alert.mitre_tactics.isnot(None), _in_window)))
     ).all()
 
     tactic_counts: dict[str, int] = {}
@@ -482,6 +494,7 @@ async def get_dashboard_metrics(
     threats_by_source = [SourceThreat(source=k, count=v) for k, v in source_count_map.items()]
 
     return DashboardMetrics(
+        period=period,
         alerts=alert_metrics,
         cases=case_metrics,
         sources=sources,
