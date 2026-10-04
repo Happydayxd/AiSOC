@@ -107,6 +107,8 @@ class DashboardMetrics(BaseModel):
     topMitre: list[MitreTactic]
     alertsTrend: list[TrendPoint]
     threatsBySource: list[SourceThreat]
+    #: Echo of the selected window so the console can confirm what it fetched.
+    period: str = "24h"
 
 
 # ───────────────────────────── v1.5 Funnel models ─────────────────────────────
@@ -445,12 +447,14 @@ async def get_dashboard_metrics(
         MitreTactic(tactic=tactic, count=count) for tactic, count in sorted(tactic_counts.items(), key=lambda x: x[1], reverse=True)[:10]
     ]
 
-    # ── 24-hour trend (hourly buckets) ────────────────────────────────────────
-    trend_start = now - timedelta(hours=24)
+    # ── trend over the selected period ────────────────────────────────────────
+    # Bucket by hour inside a day-scale window; `1h` still buckets by hour.
+    trend_start = now - window
+    bucket_fn = "minute" if period == "1h" else "hour"
     trend_rows = (
         await db.execute(
             select(
-                func.date_trunc("hour", Alert.created_at).label("bucket"),
+                func.date_trunc(bucket_fn, Alert.created_at).label("bucket"),
                 Alert.severity,
                 func.count().label("cnt"),
             )
@@ -484,6 +488,7 @@ async def get_dashboard_metrics(
         topMitre=top_mitre,
         alertsTrend=alerts_trend,
         threatsBySource=threats_by_source,
+        period=period,
     )
 
 
