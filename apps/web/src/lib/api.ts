@@ -1880,6 +1880,19 @@ export function normalizeCasesResponse(raw: unknown, filters: CaseFilters = {}):
 }
 
 export const casesApi = {
+  /** Explicit reopen — the sanctioned backwards status move (PATCH is
+   * forward-only and answers 422 on backwards transitions). */
+  async reopen(
+    caseId: string,
+    opts: { reason: string; status?: 'new' | 'triaged' | 'investigating' },
+  ): Promise<Case> {
+    const raw = await request<unknown>(`/api/v1/cases/${encodeURIComponent(caseId)}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    });
+    return normalizeCase(raw);
+  },
+
   list: async (filters: CaseFilters = {}) => {
     // The status filter is passed through unchanged. It used to be rewritten
     // through a five-state UI vocabulary, which could not express `contained`
