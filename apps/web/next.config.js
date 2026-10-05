@@ -139,6 +139,13 @@ const nextConfig = {
   // right downstream service.
   async rewrites() {
     return [
+      // Identity provider browser flows (/auth/oidc/*, /auth/saml/*). The
+      // IdP redirects back to a URL the browser can actually reach; the
+      // core API binds to loopback, so the console has to forward these.
+      {
+        source: '/auth/:path*',
+        destination: `${API_HOST}/auth/:path*`,
+      },
       // WebSocket / SSE — realtime gateway.
       {
         source: '/ws/:path*',

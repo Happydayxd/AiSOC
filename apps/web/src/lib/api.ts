@@ -526,6 +526,40 @@ export const authApi = {
     }
   },
 
+  /**
+   * Complete an SSO handoff that the IdP redirected back into the URL
+   * fragment (`#access_token=...&refresh_token=...`). Browsers never send
+   * fragments to servers, so the tokens appear in no access log or Referer
+   * header; this consumes them the moment the login screen mounts, verifies
+   * the access token against `/auth/me`, persists the session exactly like
+   * a password login would, and scrubs the fragment from history so the
+   * tokens do not linger in the address bar or browser session history.
+   */
+  async completeSsoHandoff(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    try {
+      const hash = window.location.hash;
+      if (!hash.includes('access_token=')) return false;
+      const params = new URLSearchParams(hash.replace(/^#/, ''));
+      const accessToken = params.get('access_token');
+      if (!accessToken) return false;
+      const refreshToken = params.get('refresh_token') || '';
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      const res = await fetch(`${API_BASE}/api/v1/auth/me`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return false;
+      const user = await res.json();
+      persistAuth(
+        { access_token: accessToken, refresh_token: refreshToken, token_type: 'bearer', expires_in: 0 },
+        user,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   /** Merge user preferences on the server (theme, layout, etc.). */
   async updateUserPreferences(preferences: Record<string, unknown>): Promise<AuthUser> {
     const response = await fetch(`${API_BASE}/api/v1/auth/me/preferences`, {

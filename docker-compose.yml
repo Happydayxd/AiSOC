@@ -410,6 +410,16 @@ services:
       # AISOC_SERVICE_TOKEN unreachable to this one service.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       JWT_SECRET: ${JWT_SECRET:-}
+      # Enterprise SSO (feature-flagged). Values come from .env; the repo
+      # never carries an issuer, client id or secret literal.
+      SSO_ENABLED: ${SSO_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile groups}
+      SSO_GROUPS_CLAIM: ${SSO_GROUPS_CLAIM:-}
+      SSO_LOGIN_LABEL: ${SSO_LOGIN_LABEL:-Continue with SSO}
       REALTIME_INTERNAL_TOKEN: ${REALTIME_INTERNAL_TOKEN:-}
       # The credential this service presents when it proxies the connector
       # catalog and "Test connection" to the connectors service.

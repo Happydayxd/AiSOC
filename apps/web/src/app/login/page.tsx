@@ -66,6 +66,19 @@ function LoginInner() {
   const [error, setError] = useState<string | null>(null);
   const [sso, setSso] = useState<{ sso_enabled: boolean; provider: string; login_label: string; local_login_enabled: boolean } | null>(null);
 
+  // An SSO round-trip lands here with the session in the fragment; consume
+  // it before the stored-token redirect below can read a still-empty store.
+  const [handoffPending] = useState(() =>
+    typeof window !== 'undefined' && window.location.hash.includes('access_token='),
+  );
+  useEffect(() => {
+    if (!handoffPending) return;
+    authApi.completeSsoHandoff().then((ok) => {
+      if (ok) router.replace(next);
+      else setError('The SSO sign-in could not be completed. Try again or sign in with your password.');
+    });
+  }, [handoffPending, next, router]);
+
   useEffect(() => {
     if (authApi.isAuthenticated()) {
       router.replace(next);
