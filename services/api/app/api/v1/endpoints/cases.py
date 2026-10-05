@@ -51,6 +51,7 @@ from sqlalchemy import text
 from app.api.v1.deps import AuthUser, DBSession, require_permission
 from app.core.logging import safe_log_value
 from app.services import case_orchestration, case_status, evidence_custody
+from app.services.audit import emit_audit
 from app.services.case_fanout import (
     FanoutResult,
     fanout_create_case,
@@ -179,6 +180,15 @@ class CaseResponse(BaseModel):
     triaged_at: datetime | None
     resolved_at: datetime | None
     closed_at: datetime | None
+    #: When this case was last reopened. `None` means never -- which is the
+    #: honest value for every row that predates migration 090, since we
+    #: cannot know whether a historical case was reopened and inventing a
+    #: timestamp would be worse than saying nothing.
+    reopened_at: datetime | None = None
+    #: How many times. `reopened_at` is overwritten on each reopen, so it
+    #: cannot tell one reopen from four.
+    reopen_count: int = 0
+    reopen_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     created_by: str | None
@@ -318,6 +328,11 @@ def _row_to_case(row: Any) -> CaseResponse:
         description=row.description,
         severity=row.severity,
         status=row.status,
+        # `getattr` with a default because this mapper is also handed rows
+        # from queries that select an explicit column list.
+        reopened_at=getattr(row, "reopened_at", None),
+        reopen_count=getattr(row, "reopen_count", 0) or 0,
+        reopen_reason=getattr(row, "reopen_reason", None),
         assignee=row.assignee,
         mitre_techniques=_coerce_mitre(row.mitre_techniques),
         alert_ids=list(row.alert_ids or []),
@@ -519,6 +534,131 @@ async def get_case(case_id: str, db: DBSession, user: AuthUser) -> CaseResponse:
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Case not found.")
+    return _row_to_case(row)
+
+
+class ReopenCaseRequest(BaseModel):
+    """Why this case is coming back."""
+
+    reason: str = Field(
+        min_length=8,
+        max_length=2000,
+        description="Why the case is being reopened. Recorded on the case and in the audit log.",
+    )
+    #: Where it lands. Restricted to the states a case can genuinely resume
+    #: in -- reopening straight to `contained` would assert a containment
+    #: nobody performed on this pass.
+    status: Literal["new", "triaged", "investigating"] = "investigating"
+
+
+@router.post("/{case_id}/reopen", response_model=CaseResponse, summary="Reopen a closed case")
+async def reopen_case(
+    case_id: str,
+    body: ReopenCaseRequest,
+    db: DBSession,
+    user: Annotated[AuthUser, Depends(require_permission("cases:write"))],
+) -> CaseResponse:
+    """Bring a terminal case back, deliberately and on the record.
+
+    Its own route rather than a backward edge in `TRANSITIONS`. The forward-only
+    machine is what makes "this case was closed" mean something, and adding
+    `closed -> investigating` to the table would let an ordinary `PATCH` --
+    a title edit that happens to carry a status -- walk a case backwards
+    silently. `PATCH` stays forward-only.
+
+    Three things separate this from a status change:
+
+    * a reason is required, because an unexplained reopen is exactly what an
+      auditor asks about six months later;
+    * `reopen_count` increments, so a case reopened four times is
+      distinguishable from one reopened once;
+    * `closed_at` and `resolved_at` are cleared, because leaving them set
+      would make the case terminal and active at the same time -- and every
+      closure metric reads those columns.
+    """
+    cid = await _resolve_case_id(case_id, db, user.tenant_id)
+    existing = (
+        await db.execute(
+            text("SELECT status, reopen_count FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id").bindparams(
+                id=cid, tenant_id=user.tenant_id
+            )
+        )
+    ).fetchone()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    if existing.status not in case_status.TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Case is {existing.status!r}, which is not a terminal state, so there is nothing "
+                f"to reopen. Use PATCH to move it to {sorted(case_status.TRANSITIONS.get(existing.status, set()))}."
+            ),
+        )
+
+    now = datetime.now(UTC)
+    await db.execute(
+        text(
+            """
+            UPDATE aisoc_cases
+               SET status = :status,
+                   reopened_at = :now,
+                   reopen_count = COALESCE(reopen_count, 0) + 1,
+                   reopen_reason = :reason,
+                   -- Cleared deliberately: a case that is open again has not
+                   -- been closed, and every closure metric reads these.
+                   closed_at = NULL,
+                   resolved_at = NULL,
+                   updated_at = :now
+             WHERE id = :id AND tenant_id = :tenant_id
+            """
+        ).bindparams(
+            status=body.status,
+            now=now,
+            reason=body.reason,
+            id=cid,
+            tenant_id=user.tenant_id,
+        )
+    )
+    await db.commit()
+
+    try:
+        await emit_audit(
+            db=db,
+            tenant_id=user.tenant_id,
+            actor_id=user.user_id,
+            actor_email=user.email,
+            action="case.reopen",
+            resource="case",
+            resource_id=str(cid),
+            changes={
+                "from_status": existing.status,
+                "to_status": body.status,
+                "reason": body.reason,
+                "reopen_count": (existing.reopen_count or 0) + 1,
+            },
+            # Which credential, not just which person. A key owned by an
+            # analyst resolves to that analyst's email, so without this an
+            # auditor cannot tell "Dana reopened this at her console" from "a
+            # key Dana minted a year ago reopened it from a script" -- and
+            # those call for different responses.
+            api_key_prefix=getattr(user, "api_key_prefix", None),
+        )
+    except Exception:  # noqa: BLE001 - an audit failure must not undo the reopen
+        # Roll the *failed audit attempt* back, not the reopen: that already
+        # committed above. Without this the session stays in a failed
+        # transaction and the read below raises, so an audit problem would
+        # surface to the caller as the reopen itself failing -- when in fact
+        # it succeeded and only the log entry did not. A live test caught
+        # exactly that.
+        await db.rollback()
+        logger.exception("cases.reopen.audit_failed case=%s", cid)
+
+    row = (
+        await db.execute(
+            text("SELECT * FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id").bindparams(id=cid, tenant_id=user.tenant_id)
+        )
+    ).fetchone()
     return _row_to_case(row)
 
 
@@ -1217,6 +1357,101 @@ async def _agents_proxy(method: str, path: str, **kwargs: Any) -> httpx.Response
         ) from exc
 
 
+async def _investigation_evidence(db: Any, cid: Any, tenant_id: Any) -> tuple[str, dict[str, Any]]:
+    """Assemble what the forensic agent should reason over, from the case's alerts.
+
+    The console used to send the literal string `"Investigate alert: <title>"`
+    and nothing else, so the agent reasoned over a one-line title while
+    auto-triage -- the same agent, the other entry point -- correctly passed
+    the whole `raw_event`. Two paths into one investigator, one of them
+    starved.
+
+    The evidence was never missing. `aisoc_cases.alert_ids` is written at case
+    creation and read by nothing, and `InvestigationRequest` on the agents
+    side has always declared `raw_alert`. This reads the first and fills the
+    second.
+
+    Returns `(summary, raw_alert)`. `raw_alert` stays `{}` when the case has
+    no alerts, which is honest: a case opened by hand has no telemetry, and
+    inventing a shape would hand the groundedness gate something to certify.
+    """
+    case_row = (
+        await db.execute(
+            text("SELECT title, description, severity, alert_ids FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id").bindparams(
+                id=cid, tenant_id=tenant_id
+            )
+        )
+    ).fetchone()
+    if case_row is None:
+        return "", {}
+
+    alert_ids = [str(a) for a in (case_row.alert_ids or [])]
+    if not alert_ids:
+        summary = f"{case_row.title}"
+        if case_row.description:
+            summary = f"{summary}\n\n{case_row.description}"
+        return summary, {}
+
+    # Bounded. A correlated case can carry hundreds of alerts and the prompt
+    # has a budget; the newest are the ones an analyst is looking at.
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT id, title, description, severity, confidence, status,
+                       connector_type, external_id, mitre_techniques, entities,
+                       raw_event, created_at
+                  FROM alerts
+                 WHERE tenant_id = :tenant_id AND id = ANY(CAST(:ids AS uuid[]))
+                 ORDER BY created_at DESC
+                 LIMIT 25
+                """
+            ).bindparams(tenant_id=tenant_id, ids=alert_ids)
+        )
+    ).fetchall()
+
+    alerts = [
+        {
+            "id": str(r.id),
+            "title": r.title,
+            "description": r.description,
+            "severity": r.severity,
+            "confidence": r.confidence,
+            "status": r.status,
+            "source": r.connector_type,
+            "vendor_id": r.external_id,
+            "mitre_techniques": list(r.mitre_techniques or []),
+            "entities": r.entities or {},
+            # The payload the connector actually delivered. This is the whole
+            # point: everything above is our summary of it.
+            "raw_event": r.raw_event or {},
+            "observed_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+    lines = [case_row.title]
+    if case_row.description:
+        lines.append(case_row.description)
+    lines.append(f"{len(alerts)} correlated alert(s) on this case:")
+    lines += [f"  - [{a['severity']}] {a['title']} (source: {a['source'] or 'unknown'})" for a in alerts]
+
+    raw_alert: dict[str, Any] = {
+        "case": {
+            "id": str(cid),
+            "title": case_row.title,
+            "severity": case_row.severity,
+        },
+        "alerts": alerts,
+        # Stated rather than implied: the agent and the groundedness gate both
+        # need to know whether they are seeing everything.
+        "alert_count": len(alert_ids),
+        "alerts_included": len(alerts),
+        "truncated": len(alert_ids) > len(alerts),
+    }
+    return "\n".join(lines), raw_alert
+
+
 @router.post("/{case_id}/investigate", summary="Launch investigation for case")
 async def case_investigate(
     case_id: str,
@@ -1233,6 +1468,23 @@ async def case_investigate(
     if not exists:
         raise HTTPException(status_code=404, detail="Case not found.")
 
+    # The evidence, assembled server-side from the case's own alerts rather
+    # than taken from the caller. The console was sending the literal string
+    # "Investigate alert: <title>", so the forensic agent reasoned over a
+    # headline while auto-triage passed the whole raw event to the same code.
+    #
+    # Server-side because the browser does not hold the raw events and should
+    # not be trusted with what the agent reasons over even if it did: an
+    # attacker-influenced payload reaching a prompt is the injection surface
+    # `PromptInjectionGuard` exists for, and narrowing it to data we loaded
+    # ourselves is cheaper than guarding it.
+    derived_summary, raw_alert = await _investigation_evidence(db, cid, user.tenant_id)
+    # A caller-supplied summary is kept as a note rather than used in place of
+    # the evidence, so an analyst can say why they are looking.
+    summary = derived_summary
+    if body.alert_summary:
+        summary = f"{body.alert_summary}\n\n{derived_summary}" if derived_summary else body.alert_summary
+
     # Forward the authenticated tenant so the agents service attributes the run
     # to the real tenant instead of falling back to the "default" placeholder,
     # which the demo seed no longer maps to any tenant (issue #601). The ledger
@@ -1240,7 +1492,13 @@ async def case_investigate(
     resp = await _agents_proxy(
         "POST",
         f"/api/v1/cases/{cid}/investigate",
-        json={"alert_summary": body.alert_summary or "", "tenant_id": str(user.tenant_id)},
+        json={
+            "alert_summary": summary,
+            "tenant_id": str(user.tenant_id),
+            # Declared by `InvestigationRequest` on the agents side since it
+            # was written, and never sent by anything until now.
+            "raw_alert": raw_alert,
+        },
     )
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
