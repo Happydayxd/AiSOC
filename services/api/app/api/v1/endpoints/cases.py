@@ -139,6 +139,24 @@ def _status_transition_ok(current: str, target: str) -> bool:
     rejected; reopening goes through the explicit reopen action."""
     return target in _TRANSITIONS.get(current, set())
 
+#: The canonical ladder, in order, for the forward-walk used by the
+#: agent-launch advance.
+_LADDER = list(case_status.ALL_STATUSES)
+
+
+def _forward_to_investigating_ok(current: str) -> bool:
+    """Can an agent-investigation launch move this case to investigating?
+
+    Launching an investigation is a deliberate analyst action taken *on*
+    the case, so it may walk the case forward along the canonical ladder
+    (new -> triaged -> investigating) in one step. What it may never do
+    is move backwards, re-hit the same state, or touch a terminal case --
+    reopening remains the explicit POST /reopen path.
+    """
+    if current not in _LADDER or current in case_status.TERMINAL_STATUSES:
+        return False
+    return _LADDER.index(current) < _LADDER.index(case_status.INVESTIGATING)
+
 
 class CreateCaseRequest(BaseModel):
     title: str = Field(..., min_length=3)
@@ -1589,7 +1607,7 @@ async def case_investigate(
                 ).bindparams(id=cid, tenant_id=user.tenant_id)
             )
         ).fetchone()
-        if st_row and st_row.status != "investigating" and _status_transition_ok(st_row.status, "investigating"):
+        if st_row and _forward_to_investigating_ok(st_row.status):
             await db.execute(
                 text(
                     "UPDATE aisoc_cases SET status = 'investigating', updated_at = :now "
