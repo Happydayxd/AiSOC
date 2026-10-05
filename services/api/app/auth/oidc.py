@@ -217,6 +217,21 @@ _SAFE_REDIRECT_RE = re.compile(r"^/[\w\-./]*$")
 _SAFE_PATH_CHARS_RE = re.compile(r"[^\w\-./]")
 
 
+def _sso_feature_enabled() -> bool:
+    """SSO rides behind an explicit opt-in until a deployment verifies it."""
+    return (os.getenv("SSO_ENABLED") or "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_sso_enabled() -> None:
+    if not _sso_feature_enabled():
+        # One generic answer for disabled and unconfigured: the browser has
+        # no reason to learn which providers exist on this deployment.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SSO sign-in is not enabled on this deployment.",
+        )
+
+
 def _safe_redirect(url: str) -> str:
     """Return a safe relative path derived from *url*; otherwise return '/'.
 
@@ -238,6 +253,7 @@ def _safe_redirect(url: str) -> str:
 @router.get("/login")
 async def oidc_login(request: Request, redirect: str = "/") -> Response:
     """Initiate OIDC authorization code flow."""
+    _require_sso_enabled()
     issuer = os.getenv("OIDC_ISSUER")
     client_id = os.getenv("OIDC_CLIENT_ID")
     redirect_uri = os.getenv("OIDC_REDIRECT_URI", str(request.url_for("oidc_callback")))
@@ -464,7 +480,8 @@ def _claim_groups(claims: dict[str, Any]) -> list[str]:
     `groups`, Entra emits `roles` or `groups` depending on the app
     registration, and Keycloak emits whatever the mapper was named.
     """
-    for key in ("groups", "roles", "memberOf", "group_membership"):
+    configured = (os.getenv("SSO_GROUPS_CLAIM") or "").strip()
+    for key in ((configured,) if configured else ()) + ("groups", "roles", "memberOf", "group_membership"):
         value = claims.get(key)
         if isinstance(value, list):
             return [str(v) for v in value if v]

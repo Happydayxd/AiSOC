@@ -6,12 +6,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from app.api.v1.deps import AuthUser, DBSession, require_permission
+from app.core import role_grants
 from app.core.role_grants import RoleGrantDenied, authorize_role_change, authorize_role_grant
 from app.core.security import get_password_hash
 from app.models.tenant import Tenant, User
+from app.services.audit import emit_audit
 from app.services.tenant_deletion import delete_tenant
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -86,6 +88,7 @@ class UpdateUserRequest(BaseModel):
     username: str | None = None
     role: str | None = None
     is_active: bool | None = None
+    reason: str | None = None  # required-by-convention context for role changes, audited
 
 
 class UpdateTenantSettingsRequest(BaseModel):
@@ -275,6 +278,32 @@ async def update_user(
         if val is not None:
             updates[field] = val
 
+    if "role" in updates or "is_active" in updates:
+        # Last-admin lockout guard, evaluated against the live table before
+        # anything is written — this endpoint is one of the few doors that
+        # can empty a tenant of admins, and the same check runs at every
+        # door that removes management authority.
+        demoting = "role" in updates and str(user.role) in role_grants.wildcard_roles()
+        deactivating = bool(updates.get("is_active") is False) and str(user.role) in role_grants.wildcard_roles()
+        if demoting or deactivating:
+            remaining = (
+                await db.execute(
+                    text(
+                        "SELECT count(*) FROM users "
+                        "WHERE tenant_id = :t AND is_active = TRUE AND role = ANY(:wild) AND id <> :keep"
+                    ).bindparams(
+                        t=str(current_user.tenant_id),
+                        wild=sorted(role_grants.wildcard_roles()),
+                        keep=str(user_id),
+                    )
+                )
+            ).scalar()
+            if not remaining:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="this is the last active administrator in the tenant; promote another admin before removing this one",
+                )
+
     if "role" in updates:
         try:
             updates["role"] = authorize_role_change(
@@ -292,6 +321,21 @@ async def update_user(
     if updates:
         updates["updated_at"] = datetime.now(UTC)
         await db.execute(update(User).where(User.id == user_id).values(**updates))
+        # Role changes are auditable events with their reason; every admin
+        # mutation is logged, and nothing that reaches this line does so
+        # silently.
+        if "role" in updates:
+            await emit_audit(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                actor_id=current_user.user_id,
+                actor_email=current_user.email,
+        api_key_prefix=getattr(current_user, "api_key_prefix", None),
+                action="users:role_changed",
+                resource="user",
+                resource_id=str(user_id),
+                changes={"from": str(user.role), "to": updates["role"], "reason": (request.reason or "")[:500]},
+            )
         await db.commit()
         await db.refresh(user)
 

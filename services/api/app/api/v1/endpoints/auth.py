@@ -13,6 +13,7 @@ from app.api.v1.deps import AuthUser, DBSession, get_current_user
 
 __all__ = ["router", "get_current_user"]
 from app.core.config import settings
+from app.core.role_grants import wildcard_roles as WILDCARD_ROLES
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -102,6 +103,20 @@ async def login(request: LoginRequest, http_request: Request, db: DBSession) -> 
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Break-glass policy: once SSO is enabled, an operator may close the
+    # password door for everyone except the wildcard roles, so local
+    # accounts survive as the path that works when the IdP is down -- and
+    # only as that path. Answered after password verification so it leaks
+    # nothing about which addresses exist, and throttled above like every
+    # other attempt here.
+    sso_enabled = (settings_dict().get("SSO_ENABLED") or "false").strip().lower() in {"1", "true", "yes", "on"}
+    local_admin_only = (settings_dict().get("SSO_LOCAL_ADMIN_ONLY") or "false").strip().lower() in {"1", "true", "yes", "on"}
+    if sso_enabled and local_admin_only and user.role not in WILDCARD_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password sign-in is disabled for this account. Use single sign-on.",
+        )
+
     await throttle.record_success(email=request.email, source_ip=source)
 
     # Update last login
@@ -120,6 +135,30 @@ async def login(request: LoginRequest, http_request: Request, db: DBSession) -> 
         access_token=access_token,
         refresh_token=refresh_token,
     )
+
+
+def settings_dict() -> dict[str, str]:
+    """The SSO-related environment, read live so an operator can flip the
+    flag without a redeploy. Anything unset reads as its safe default."""
+    import os
+
+    return {k: (os.getenv(k) or "") for k in ("SSO_ENABLED", "SSO_LOCAL_ADMIN_ONLY", "SSO_LOGIN_LABEL", "SSO_PROVIDER")}
+
+
+@router.get("/sso/status")
+async def sso_status() -> dict[str, Any]:
+    """What the login screen asks before it offers SSO. Public: it reveals
+    only that SSO is offered, under what label, and whether password sign-in
+    remains open -- never issuers, client ids, endpoints or secrets."""
+    d = settings_dict()
+    enabled = d["SSO_ENABLED"].strip().lower() in {"1", "true", "yes", "on"}
+    local_admin_only = d["SSO_LOCAL_ADMIN_ONLY"].strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "sso_enabled": enabled,
+        "provider": (d["SSO_PROVIDER"] or "oidc").strip().lower(),
+        "login_label": (d["SSO_LOGIN_LABEL"] or "Continue with SSO").strip()[:80],
+        "local_login_enabled": (not enabled) or (not local_admin_only),
+    }
 
 
 @router.post("/refresh", response_model=TokenResponse)

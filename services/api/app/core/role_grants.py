@@ -70,6 +70,7 @@ WILDCARD: Final[str] = "*"
 #: places that must pick a single winner, such as SCIM group precedence.
 GRANTABLE_ROLES: Final[tuple[str, ...]] = (
     "viewer",
+    "infosec",
     "soc_analyst",
     "threat_hunter",
     "soc_lead",

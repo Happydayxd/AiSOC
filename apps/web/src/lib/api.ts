@@ -44,7 +44,7 @@ function safeBase(url: string): string {
   return url;
 }
 
-const API_BASE = safeBase(process.env.NEXT_PUBLIC_API_URL || '');
+export const API_BASE = safeBase(process.env.NEXT_PUBLIC_API_URL || '');
 const AGENTS_BASE = safeBase(process.env.NEXT_PUBLIC_AGENTS_URL || '');
 const ACTIONS_BASE = safeBase(process.env.NEXT_PUBLIC_ACTIONS_URL || '');
 const FUSION_BASE = safeBase(process.env.NEXT_PUBLIC_FUSION_URL || '');
@@ -438,6 +438,20 @@ function persistAuth(tokens: TokenResponse, user: AuthUser): void {
 }
 
 export const authApi = {
+  /**
+   * Public SSO availability for the login screen: whether SSO is offered,
+   * under what label, and whether password sign-in remains open. Reveals
+   * no provider internals; a failure reads as "no SSO" rather than an
+   * error state, so a status outage never blocks the password form.
+   */
+  ssoStatus: async (): Promise<{ sso_enabled: boolean; provider: string; login_label: string; local_login_enabled: boolean }> => {
+    try {
+      return await request('/api/v1/auth/sso/status');
+    } catch {
+      return { sso_enabled: false, provider: 'oidc', login_label: 'Continue with SSO', local_login_enabled: true };
+    }
+  },
+
   /**
    * Email + password login against ``POST /api/v1/auth/login``.
    *

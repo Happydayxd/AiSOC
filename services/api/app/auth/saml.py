@@ -176,6 +176,9 @@ async def saml_login(request: Request, redirect: str = "/") -> Response:
 @router.post("/acs")
 async def saml_acs(request: Request, db: DBSession) -> Response:
     """Assertion Consumer Service — process IdP POST-back and issue JWT."""
+    from app.auth.oidc import _require_sso_enabled
+
+    _require_sso_enabled()
     try:
         from onelogin.saml2.auth import OneLogin_Saml2_Auth  # type: ignore[import]
 

@@ -331,6 +331,28 @@ def verify_ed25519_signature(public_key_bytes: bytes, message: bytes, signature:
         raise ValueError("Invalid signature") from exc
 
 
+#: Security analyst / incident handler, declared as a set expression rather
+#: than a literal copy so it cannot drift from the analyst and hunter rows
+#: above it. The subtraction is the restriction list: no user, role, settings,
+#: raw-alert, connector-credential, audit, API-key or platform management.
+ROLE_PERMISSIONS["infosec"] = sorted(
+    (set(ROLE_PERMISSIONS["soc_analyst"]) | set(ROLE_PERMISSIONS["threat_hunter"]))
+    - {
+        "alert_source_raw:read",
+        "alerts:delete",
+        "api_keys:manage",
+        "connectors:write",
+        "connectors:delete",
+        "platform_admin",
+        "roles:delete",
+        "roles:write",
+        "settings:write",
+        "users:delete",
+        "users:write",
+    }
+)
+
+
 def has_permission(role: str, permission: str) -> bool:
     """Check if a role has a specific permission."""
     perms = ROLE_PERMISSIONS.get(role, [])

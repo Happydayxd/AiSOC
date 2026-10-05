@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, create_refresh_token
 from app.db.rls import set_rls_context
+from app.services.audit import emit_audit
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 #: `platform_admin`: v14.0.0 made those unreachable from every API route
 #: precisely so that nothing but `bootstrap_admin` can mint one, and an SSO
 #: group mapping would be a way back in.
-ASSIGNABLE_ROLES = frozenset({"viewer", "soc_analyst", "soc_lead", "threat_hunter", "tenant_admin"})
+ASSIGNABLE_ROLES = frozenset({"viewer", "infosec", "soc_analyst", "soc_lead", "threat_hunter", "tenant_admin"})
 
 #: What an unmapped group gets. The least-privileged role, not nothing,
 #: because a user who authenticated successfully and then cannot see
@@ -78,7 +79,7 @@ def map_groups_to_role(groups: list[str], mapping: dict[str, str]) -> str:
     in: making the answer depend on list order would make it unstable
     across sign-ins.
     """
-    order = ["viewer", "soc_analyst", "threat_hunter", "soc_lead", "tenant_admin"]
+    order = ["viewer", "infosec", "soc_analyst", "threat_hunter", "soc_lead", "tenant_admin"]
     best = DEFAULT_ROLE
     for group in groups:
         role = mapping.get(group) or mapping.get(group.lower())
@@ -99,6 +100,16 @@ def map_groups_to_role(groups: list[str], mapping: dict[str, str]) -> str:
     return best
 
 
+def _parse_domain_allowlist(raw: str) -> set[str]:
+    """Normalize the comma-separated allowlist to lowercase domains."""
+    return {d.strip().lower() for d in (raw or "").split(",") if d.strip()}
+
+
+def _domain_allowed(email: str, allowed: set[str]) -> bool:
+    domain = email.rsplit("@", 1)[-1].lower() if "@" in email else ""
+    return bool(domain) and domain in allowed
+
+
 async def resolve_connection(db: AsyncSession, *, provider: str, issuer: str) -> dict[str, Any] | None:
     """The configured SSO connection for this issuer, or None.
 
@@ -113,7 +124,8 @@ async def resolve_connection(db: AsyncSession, *, provider: str, issuer: str) ->
                     text("""
                     -- `id` is what an identity binding is keyed on, so the
                     -- connection has to carry it: see `_bind_subject`.
-                    SELECT id, tenant_id, group_role_mapping, default_role, enabled
+                    SELECT id, tenant_id, group_role_mapping, default_role, enabled,
+                           allowed_email_domains, jit_provisioning, group_role_mode
                       FROM aisoc_sso_connections
                      WHERE provider = :p AND issuer = :i AND enabled = TRUE
                      LIMIT 1
@@ -178,6 +190,8 @@ async def provision_user(
     provider: str,
     subject: str,
     email_verified: bool | None,
+    jit_provisioning: bool = True,
+    group_role_mode: str = "first_login_only",
 ) -> dict[str, Any]:
     """Find or create the local user this assertion names.
 
@@ -236,13 +250,27 @@ async def provision_user(
                 "UPDATE aisoc_sso_identities SET last_seen_at = :now WHERE tenant_id = :t AND connection_id = :c AND subject = :s"
             ).bindparams(now=datetime.now(UTC), t=tenant_id, c=connection_id, s=subject)
         )
+        previous_role = str(bound["role"])
+        if group_role_mode != "authoritative":
+            # first_login_only (the default): IdP groups decide the role at
+            # provisioning and admin owns every change after that. A stale
+            # group can neither promote nor demote someone who already has an
+            # account, so a group-sync outage or misconfiguration cannot
+            # silently move authority.
+            role = previous_role
         if bound["role"] != role:
             await db.execute(
                 text("UPDATE users SET role = :r, updated_at = :now WHERE id = :id").bindparams(
                     r=role, now=datetime.now(UTC), id=bound["user_id"]
                 )
             )
-        return {"id": bound["user_id"], "email": bound["email"], "role": role, "created": False}
+            logger.info(
+                "sso.role_refreshed email=%s from=%s to=%s",
+                _sanitize(email, 80),
+                _sanitize(previous_role, 40),
+                _sanitize(role, 40),
+            )
+        return {"id": bound["user_id"], "email": bound["email"], "role": role, "created": False, "previous_role": previous_role}
 
     # ── 2. Claim by verified email ────────────────────────────────────────
     existing = (
@@ -334,6 +362,16 @@ async def provision_user(
             )
         return {"id": existing["id"], "email": existing["email"], "role": role, "created": False}
 
+    if not jit_provisioning:
+        # JIT off means the directory is not an account-creation channel:
+        # an operator must create the account first. Refused rather than
+        # silently viewed-later, so "your account does not exist yet" is
+        # actionable rather than mysterious.
+        raise SsoProvisioningError(
+            "just-in-time provisioning is disabled on this SSO connection; "
+            "an administrator must create the account first"
+        )
+
     user_id = uuid.uuid4()
     now = datetime.now(UTC)
     await db.execute(
@@ -377,7 +415,7 @@ async def provision_user(
         _sanitize(role, 40),
         _sanitize(provider, 20),
     )
-    return {"id": user_id, "email": email, "role": role, "created": True}
+    return {"id": user_id, "email": email, "role": role, "created": True, "previous_role": None}
 
 
 async def complete_sso_login(
@@ -412,6 +450,29 @@ async def complete_sso_login(
             f"no enabled SSO connection is configured for issuer {issuer!r}. "
             "The tenant is taken from the connection, never from the assertion."
         )
+
+    # Domain allowlist, checked before anything is written or audited as a
+    # success. An empty allowlist means the operator did not restrict
+    # domains; a configured one is exhaustive -- anything outside it is
+    # refused without a local row being created.
+    allowed_domains = _parse_domain_allowlist(connection.get("allowed_email_domains") or "")
+    if allowed_domains and not _domain_allowed(email, allowed_domains):
+        try:
+            await emit_audit(
+                db=db,
+                tenant_id=connection["tenant_id"],
+                action="sso.login_denied",
+                resource="sso_connection",
+                resource_id=str(connection["id"]),
+                changes={"reason": "email_domain_not_allowed", "domain": email.rsplit("@", 1)[-1].lower(), "provider": provider},
+            )
+            await db.commit()
+        except Exception as audit_exc:  # noqa: BLE001
+            # The refusal is the security property; a failing audit row is
+            # logged at WARNING and does not change the answer.
+            await db.rollback()
+            logger.warning("sso.denial_audit_failed error=%s", _sanitize(audit_exc))
+        raise SsoProvisioningError("this email domain is not permitted to sign in through SSO on this connection")
 
     mapping = connection.get("group_role_mapping") or {}
     if isinstance(mapping, str):
@@ -450,6 +511,8 @@ async def complete_sso_login(
         provider=provider,
         subject=subject,
         email_verified=email_verified,
+        jit_provisioning=bool(connection.get("jit_provisioning", True)),
+        group_role_mode=str(connection.get("group_role_mode") or "first_login_only"),
     )
     await db.commit()
 
@@ -457,6 +520,27 @@ async def complete_sso_login(
     # so the API's own verifier accepts it. That is the whole point: the
     # previous token was signed with `JWT_SECRET`, carried no tenant or
     # role, and was put in a cookie the API does not read.
+    try:
+        await emit_audit(
+            db=db,
+            tenant_id=connection["tenant_id"],
+            actor_id=user["id"],
+            actor_email=user["email"],
+            action="sso.user_provisioned" if user.get("created") else "sso.login",
+            resource="sso_connection",
+            resource_id=str(connection["id"]),
+            changes={
+                "provider": provider,
+                "role": user["role"],
+                "previous_role": user.get("previous_role"),
+                "auth": "sso",
+            },
+        )
+        await db.commit()
+    except Exception as audit_exc:  # noqa: BLE001
+        await db.rollback()
+        logger.warning("sso.login_audit_failed error=%s", _sanitize(audit_exc))
+
     claims = {
         "sub": str(user["id"]),
         "tenant_id": str(connection["tenant_id"]),

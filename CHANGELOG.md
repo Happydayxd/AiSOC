@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Enterprise SSO wave: a feature-flagged (`SSO_ENABLED=false` by default)
+  single-sign-on surface with a login-screen button served by
+  `GET /api/v1/auth/sso/status`, `infosec` as a first-class assignable role
+  (analyst + hunter permissions, no user/role/settings/credential doors),
+  per-connection provisioning policy (`allowed_email_domains`,
+  `jit_provisioning`, `group_role_mode` on `aisoc_sso_connections`,
+  migration `091`), domain-allowlist enforcement at the provisioning
+  chokepoint, `first_login_only` as the default group mode so IdP groups set
+  the role once and admins own every change after it, audited SSO logins and
+  provisioning events, audited admin role changes with a required-context
+  `reason` and a last-admin lockout guard on `PATCH /tenants/me/users/{id}`,
+  a break-glass `SSO_LOCAL_ADMIN_ONLY` mode that keeps password login open
+  for wildcard roles only, and a regression suite
+  (`tests/test_sso_enterprise_policy.py`) locking the least-privilege
+  vocabulary, the fail-closed gates, and the off-by-default flag.
+
+
 ### Fixed
 
 - **Launching an agent investigation now advances the case.** The v17

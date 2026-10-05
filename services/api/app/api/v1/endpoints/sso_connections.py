@@ -53,6 +53,7 @@ from sqlalchemy.exc import IntegrityError
 from app.api.v1.deps import AuthUser, require_permission
 from app.core import role_grants
 from app.db.rls import TenantDBSession
+from app.services.audit import emit_audit
 
 router = APIRouter(prefix="/sso-connections", tags=["sso"])
 
@@ -71,6 +72,20 @@ class SsoConnectionIn(BaseModel):
     default_role: str = "viewer"
     metadata_url: str | None = Field(default=None, max_length=1024)
     metadata_xml: str | None = None
+    #: Comma-separated email domains provisioning is restricted to. Empty
+    #: means unrestricted; anything outside a configured list is refused at
+    #: the provisioning chokepoint, before any row is written.
+    allowed_email_domains: str = Field(default="", max_length=2000)
+    jit_provisioning: bool = True
+    group_role_mode: str = "first_login_only"
+    login_label: str = Field(default="", max_length=80)
+
+    @field_validator("group_role_mode")
+    @classmethod
+    def _known_mode(cls, v: str) -> str:
+        if v not in ("first_login_only", "authoritative"):
+            raise ValueError("group_role_mode must be 'first_login_only' or 'authoritative'")
+        return v
 
     @field_validator("provider")
     @classmethod
@@ -89,6 +104,10 @@ class SsoConnectionOut(BaseModel):
     enabled: bool
     group_role_mapping: dict[str, str]
     default_role: str
+    allowed_email_domains: str
+    jit_provisioning: bool
+    group_role_mode: str
+    login_label: str
     metadata_url: str | None
     #: Whether XML was supplied, never the XML itself. A SAML metadata
     #: document is not a secret, but it is large and echoing it on every
@@ -108,6 +127,10 @@ def _row_to_out(row: Any) -> SsoConnectionOut:
         enabled=bool(row["enabled"]),
         group_role_mapping=dict(row["group_role_mapping"] or {}),
         default_role=row["default_role"],
+        allowed_email_domains=row.get("allowed_email_domains") or "",
+        jit_provisioning=bool(row.get("jit_provisioning", True)),
+        group_role_mode=str(row.get("group_role_mode") or "first_login_only"),
+        login_label=str(row.get("login_label") or ""),
         metadata_url=row["metadata_url"],
         has_metadata_xml=bool(row["metadata_xml"]),
         created_at=row["created_at"].isoformat() if row["created_at"] else None,
@@ -154,6 +177,7 @@ async def list_sso_connections(
                 text("""
                 SELECT id, tenant_id, provider, issuer, display_name, enabled,
                        group_role_mapping, default_role, metadata_url, metadata_xml,
+                       allowed_email_domains, jit_provisioning, group_role_mode, login_label,
                        created_at, updated_at
                   FROM aisoc_sso_connections
                  WHERE tenant_id = CAST(:t AS uuid)
@@ -200,11 +224,14 @@ async def create_sso_connection(
                     text("""
                     INSERT INTO aisoc_sso_connections
                         (tenant_id, provider, issuer, display_name, enabled,
-                         group_role_mapping, default_role, metadata_url, metadata_xml)
+                         group_role_mapping, default_role, metadata_url, metadata_xml,
+                         allowed_email_domains, jit_provisioning, group_role_mode, login_label)
                     VALUES (CAST(:t AS uuid), :p, :i, :d, :e,
-                            CAST(:m AS jsonb), :r, :mu, :mx)
+                            CAST(:m AS jsonb), :r, :mu, :mx,
+                            :dom, :jit, :mode, :label)
                     RETURNING id, tenant_id, provider, issuer, display_name, enabled,
                               group_role_mapping, default_role, metadata_url, metadata_xml,
+                              allowed_email_domains, jit_provisioning, group_role_mode, login_label,
                               created_at, updated_at
                 """).bindparams(
                         t=str(current_user.tenant_id),
@@ -216,6 +243,10 @@ async def create_sso_connection(
                         r=body.default_role,
                         mu=body.metadata_url,
                         mx=body.metadata_xml,
+                        dom=body.allowed_email_domains,
+                        jit=body.jit_provisioning,
+                        mode=body.group_role_mode,
+                        label=body.login_label,
                     )
                 )
             )
@@ -232,6 +263,19 @@ async def create_sso_connection(
 
     if row is None:  # pragma: no cover - RETURNING always yields on success
         raise HTTPException(status_code=500, detail="connection was not created")
+    await emit_audit(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        actor_id=current_user.user_id,
+        actor_email=current_user.email,
+        api_key_prefix=getattr(current_user, "api_key_prefix", None),
+        action="sso.connection_created",
+        resource="sso_connection",
+        resource_id=str(row["id"]),
+        changes={"provider": body.provider, "issuer": body.issuer, "enabled": body.enabled,
+                 "default_role": body.default_role, "group_role_mode": body.group_role_mode},
+    )
+    await db.commit()
     return _row_to_out(row)
 
 
@@ -256,10 +300,13 @@ async def update_sso_connection(
                 UPDATE aisoc_sso_connections
                    SET provider = :p, issuer = :i, display_name = :d, enabled = :e,
                        group_role_mapping = CAST(:m AS jsonb), default_role = :r,
-                       metadata_url = :mu, metadata_xml = :mx, updated_at = NOW()
+                       metadata_url = :mu, metadata_xml = :mx,
+                       allowed_email_domains = :dom, jit_provisioning = :jit,
+                       group_role_mode = :mode, login_label = :label, updated_at = NOW()
                  WHERE id = CAST(:id AS uuid) AND tenant_id = CAST(:t AS uuid)
                 RETURNING id, tenant_id, provider, issuer, display_name, enabled,
                           group_role_mapping, default_role, metadata_url, metadata_xml,
+                          allowed_email_domains, jit_provisioning, group_role_mode, login_label,
                           created_at, updated_at
             """).bindparams(
                     id=str(connection_id),
@@ -272,6 +319,10 @@ async def update_sso_connection(
                     r=body.default_role,
                     mu=body.metadata_url,
                     mx=body.metadata_xml,
+                    dom=body.allowed_email_domains,
+                    jit=body.jit_provisioning,
+                    mode=body.group_role_mode,
+                    label=body.login_label,
                 )
             )
         )
@@ -280,6 +331,19 @@ async def update_sso_connection(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="connection not found")
+    await emit_audit(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        actor_id=current_user.user_id,
+        actor_email=current_user.email,
+        api_key_prefix=getattr(current_user, "api_key_prefix", None),
+        action="sso.connection_updated",
+        resource="sso_connection",
+        resource_id=str(connection_id),
+        changes={"enabled": body.enabled, "default_role": body.default_role,
+                 "group_role_mapping": body.group_role_mapping, "group_role_mode": body.group_role_mode},
+    )
+    await db.commit()
     return _row_to_out(row)
 
 
@@ -298,3 +362,14 @@ async def delete_sso_connection(
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="connection not found")
+    await emit_audit(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        actor_id=current_user.user_id,
+        actor_email=current_user.email,
+        api_key_prefix=getattr(current_user, "api_key_prefix", None),
+        action="sso.connection_deleted",
+        resource="sso_connection",
+        resource_id=str(connection_id),
+    )
+    await db.commit()
