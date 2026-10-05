@@ -175,12 +175,7 @@ const STATUS_DOT: Record<CaseStatus, string> = {
   contained: 'bg-amber-400',
   resolved: 'bg-emerald-400',
   closed: 'bg-slate-600',
-  new: 'bg-slate-400',
-  triaged: 'bg-amber-400',
-  investigating: 'bg-blue-400 animate-pulse',
-  contained: 'bg-teal-400',
-  pending_closure: 'bg-violet-400',
-  cancelled: 'bg-slate-500'};
+};
 
 const TASK_STATUS_BADGE: Record<CaseTask['status'], string> = {
   todo: 'bg-slate-500/15 text-slate-300 ring-slate-500/30',

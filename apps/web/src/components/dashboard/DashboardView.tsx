@@ -18,6 +18,7 @@ import React, { Component, Suspense, type ErrorInfo, type ReactNode, useState, u
 import useSWR from 'swr';
 import { metricsApi, type DashboardMetrics } from '@/lib/api';
 import { useTimeWindow } from '@/components/layout/TimeWindowProvider';
+import { TIME_WINDOW_LONG_LABEL, TIME_WINDOW_SHORT_LABEL } from '@/lib/timeWindow';
 import { clsx } from 'clsx';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -29,8 +30,6 @@ import { FunnelKpiBar } from './FunnelKpiBar';
 import { EfficiencyReport } from './EfficiencyReport';
 import { PipelineHealth } from './PipelineHealth';
 import { demoFallback } from '@/lib/demoFallback';
-import { useTimeWindow } from '@/components/layout/TimeWindowProvider';
-import { TIME_WINDOW_LONG_LABEL, TIME_WINDOW_SHORT_LABEL } from '@/lib/timeWindow';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 
@@ -536,9 +535,9 @@ export function DashboardView() {
   const topMitre = metrics?.topMitre ?? [];
   const activeSourceCount = sources.filter((s) => s.status === 'active').length;
 
-  const periodLabel = TIME_WINDOW_SHORT_LABEL[metrics?.period ?? period];
+  const periodLabel = TIME_WINDOW_SHORT_LABEL[timeWindow] ?? '';
   const trendTimeFmt =
-    (metrics?.period ?? period) === '7d' || (metrics?.period ?? period) === '30d'
+    (timeWindow) === '7d' || (timeWindow) === '30d'
       ? 'MMM d'
       : 'HH:mm';
   const trendData = (metrics?.alertsTrend ?? []).map((d) => ({
@@ -666,7 +665,7 @@ export function DashboardView() {
               pending={metricsPending}
               onRetry={retryMetrics}
               emptyTitle={`No alerts in the last ${TIME_WINDOW_LONG_LABEL[
-                metrics?.period ?? period
+                timeWindow
               ].replace(/^Last /, '')}`}
               emptyDescription="The volume curve plots alert counts once alerts start arriving."
             />

@@ -93,7 +93,6 @@ vi.mock('@/lib/realtime', () => ({
 }));
 
 import { DashboardView } from './DashboardView';
-import { TimeWindowProvider } from '@/components/layout/TimeWindowProvider';
 
 /** Every panel claim that is a statement about measured data. */
 const MEASURED_CLAIMS = [
@@ -117,7 +116,7 @@ afterEach(() => {
 
 describe('the dashboard does not report a result it has not got', () => {
   it('claims nothing on first paint, while the request is still in flight', () => {
-    swrLoading.add(`dashboard-metrics:24h`);
+    swrLoading.add('dashboard-metrics');
 
     render(
       <TimeWindowProvider>
@@ -134,7 +133,7 @@ describe('the dashboard does not report a result it has not got', () => {
   it('claims nothing when the response carried no alert totals', () => {
     // Not in flight, no error, and a payload the view cannot read. Equally
     // unmeasured, and the branch a plain `isLoading` check would miss.
-    swrData.set(`dashboard-metrics:24h`, { cases: { open: 0, inProgress: 0, resolvedThisWeek: 0 } });
+    swrData.set('dashboard-metrics', { cases: { open: 0, inProgress: 0, resolvedThisWeek: 0 } });
 
     render(
       <TimeWindowProvider>
@@ -149,7 +148,7 @@ describe('the dashboard does not report a result it has not got', () => {
   });
 
   it('still shows the failure when the request failed', () => {
-    swrErrors.set(`dashboard-metrics:24h`, new Error('503 Service Unavailable'));
+    swrErrors.set('dashboard-metrics', new Error('503 Service Unavailable'));
 
     render(
       <TimeWindowProvider>
@@ -164,7 +163,7 @@ describe('the dashboard does not report a result it has not got', () => {
   it('still reports a genuinely empty window as empty', () => {
     // The other direction. "Not loaded yet" everywhere forever would pass
     // every assertion above and tell an operator nothing.
-    swrData.set(`dashboard-metrics:24h`, {
+    swrData.set('dashboard-metrics', {
       alerts: { total: 0, new: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, mttr: 0, mttr_sample_count: 0 },
       cases: { open: 0, inProgress: 0, resolvedThisWeek: 0 },
       sources: [],
