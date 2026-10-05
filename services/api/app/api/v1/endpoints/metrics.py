@@ -146,14 +146,18 @@ class MitreCoverage(BaseModel):
 
 
 class FunnelDeltas(BaseModel):
-    """Period-over-period percentage deltas for the funnel KPI bar."""
+    """Period-over-period percentage deltas for the funnel KPI bar.
 
-    events_of_interest: float
-    correlation_instances: float
-    alerts_generated: float
-    signal_to_noise: float
-    mttd_seconds: float
-    analyst_queue_depth: float
+    ``None`` means the previous window was empty — no baseline exists, and
+    the UI renders that as "no baseline" instead of a misleading 0%.
+    """
+
+    events_of_interest: float | None = None
+    correlation_instances: float | None = None
+    alerts_generated: float | None = None
+    signal_to_noise: float | None = None
+    mttd_seconds: float | None = None
+    analyst_queue_depth: float | None = None
 
 
 class FunnelMetrics(BaseModel):
@@ -333,6 +337,9 @@ async def get_dashboard_metrics(
     }
     window_delta, trend_trunc = _period_map[period]
     window_start = now - window_delta
+    # One window predicate for every windowed count below, so no tile can
+    # silently answer for a different period than the selector says.
+    _in_window = Alert.created_at >= window_start
 
     # ── Alert counts ──────────────────────────────────────────────────────────
     # Unresolved only. See `_count_alerts_by_status`: these tiles are labelled
@@ -417,7 +424,9 @@ async def get_dashboard_metrics(
     # Count alerts per connector_type
     source_counts_rows = (
         await db.execute(
-            select(Alert.connector_type, func.count().label("cnt")).where(and_(Alert.tenant_id == tenant_id, _in_window)).group_by(Alert.connector_type)
+            select(Alert.connector_type, func.count().label("cnt"))
+            .where(and_(Alert.tenant_id == tenant_id, _in_window))
+            .group_by(Alert.connector_type)
         )
     ).all()
     source_count_map: dict[str, int] = {row.connector_type: row.cnt for row in source_counts_rows if row.connector_type}
@@ -444,7 +453,9 @@ async def get_dashboard_metrics(
     # jsonb_array_elements_text + GROUP BY in the same SELECT 500s on some
     # Postgres builds.
     tactic_rows = (
-        await db.execute(select(Alert.mitre_tactics).where(and_(Alert.tenant_id == tenant_id, Alert.mitre_tactics.isnot(None), _in_window)))
+        await db.execute(
+            select(Alert.mitre_tactics).where(and_(Alert.tenant_id == tenant_id, Alert.mitre_tactics.isnot(None), _in_window))
+        )
     ).all()
 
     tactic_counts: dict[str, int] = {}
@@ -461,12 +472,11 @@ async def get_dashboard_metrics(
 
     # ── trend over the selected period ────────────────────────────────────────
     # Bucket by hour inside a day-scale window; `1h` still buckets by hour.
-    trend_start = now - window
-    bucket_fn = "minute" if period == "1h" else "hour"
+    trend_start = window_start
     trend_rows = (
         await db.execute(
             select(
-                func.date_trunc(bucket_fn, Alert.created_at).label("bucket"),
+                func.date_trunc(trend_trunc, Alert.created_at).label("bucket"),
                 Alert.severity,
                 func.count().label("cnt"),
             )
@@ -501,7 +511,6 @@ async def get_dashboard_metrics(
         topMitre=top_mitre,
         alertsTrend=alerts_trend,
         threatsBySource=threats_by_source,
-        period=period,
     )
 
 
@@ -863,15 +872,17 @@ async def get_alert_trend(
 # ──────────────────────────── v1.5 funnel endpoint ────────────────────────────
 
 
-def _pct_delta(current: float, previous: float) -> float:
+def _pct_delta(current: float, previous: float) -> float | None:
     """Compute period-over-period percentage change.
 
-    Returns 0.0 when the previous value is zero (avoids `inf`). Otherwise:
+    Returns ``None`` when the previous window was empty: there is no
+    baseline, and rendering `0.0` would claim "flat" where the honest
+    answer is "unknown". The UI renders None as "no baseline". Otherwise:
 
         ((current - previous) / previous) * 100, rounded to 2 decimals.
     """
     if previous == 0:
-        return 0.0
+        return None
     return round(((current - previous) / previous) * 100.0, 2)
 
 
@@ -1220,7 +1231,7 @@ async def get_funnel_metrics(
     ``deltas`` compares the current window to the immediately preceding window
     of the same length (e.g. for ``period=24h`` we compare to the 24h ending
     24h ago). Values are percentage changes rounded to two decimals; a delta
-    of ``0.0`` means "no meaningful baseline" (the previous window was empty).
+    of ``None`` means "no baseline" (the previous window was empty).
     """
     delta = _FUNNEL_PERIOD_MAP[period]
     now = datetime.now(UTC)

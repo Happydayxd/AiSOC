@@ -46,8 +46,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import text
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.api.v1.deps import AuthUser, DBSession, require_permission
 from app.core.logging import safe_log_value
@@ -139,11 +138,6 @@ def _status_transition_ok(current: str, target: str) -> bool:
     `case_status.TRANSITIONS`. Backwards moves and undeclared skips are
     rejected; reopening goes through the explicit reopen action."""
     return target in _TRANSITIONS.get(current, set())
-
-
-class ReopenCaseRequest(BaseModel):
-    reason: str = Field(..., min_length=3, max_length=500)
-    target_status: Literal["new", "triaged", "investigating"] = "investigating"
 
 
 class CreateCaseRequest(BaseModel):
@@ -724,7 +718,11 @@ async def update_case(
         if not _status_transition_ok(existing.status, body.status):
             raise HTTPException(
                 status_code=422,
-                detail=f"Invalid status transition: {existing.status} → {body.status}. Allowed: {sorted(_TRANSITIONS.get(existing.status, set())) or 'none'}; reopening requires the reopen action.",
+                detail=(
+                    f"Invalid status transition: {existing.status} → {body.status}. "
+                    f"Allowed: {sorted(_TRANSITIONS.get(existing.status, set())) or 'none'}; "
+                    "backwards moves require POST /cases/{id}/reopen."
+                ),
             )
 
     now = datetime.now(UTC)
@@ -906,68 +904,6 @@ def case_queue_for(case_row: Any, queues: list[Any]) -> Any:
         ),
         queues,
     )
-
-@router.post("/{case_id}/reopen", response_model=CaseResponse, summary="Reopen a case")
-async def reopen_case(
-    case_id: str,
-    body: ReopenCaseRequest,
-    db: DBSession,
-    user: Annotated[AuthUser, Depends(require_permission("cases:write"))],
-) -> CaseResponse:
-    """Explicit reopen — the sanctioned backwards status move.
-
-    PATCH /cases/{id} is forward-only by design (see _status_transition_ok);
-    this endpoint is the 'reopen action' its 422 refers to. It resets the
-    future-stage timestamps so the reopened case reads cleanly on the board,
-    and records a timeline event.
-    """
-    import json as _json
-
-    cid = await _resolve_case_id(case_id, db, user.tenant_id)
-    existing = (
-        await db.execute(
-            text("SELECT status FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id").bindparams(id=cid, tenant_id=user.tenant_id)
-        )
-    ).fetchone()
-    if not existing:
-        raise HTTPException(status_code=404, detail="Case not found.")
-    if _status_transition_ok(existing.status, body.target_status):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{existing.status} → {body.target_status} is a forward transition; use PATCH /cases/{case_id}.",
-        )
-
-    now = datetime.now(UTC)
-    row = (
-        await db.execute(
-            text(
-                "UPDATE aisoc_cases SET status = :status, reopened_at = :now, "
-                "triaged_at = NULL, resolved_at = NULL, closed_at = NULL, updated_at = :now "
-                "WHERE id = :id AND tenant_id = :tenant_id RETURNING *"
-            ).bindparams(id=cid, tenant_id=user.tenant_id, status=body.target_status, now=now)
-        )
-    ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Case not found.")
-    try:
-        await db.execute(
-            text(
-                "INSERT INTO case_timeline_events (case_id, tenant_id, event_type, actor_type, summary, detail) "
-                "VALUES (:case_id, :tenant_id, 'status_change', 'user', :summary, CAST(:detail AS JSONB))"
-            ).bindparams(
-                case_id=cid,
-                tenant_id=user.tenant_id,
-                summary=f"Case reopened: {existing.status} → {body.target_status}",
-                detail=_json.dumps({"reason": body.reason, "from": existing.status, "to": body.target_status}),
-            )
-        )
-        await db.commit()
-    except Exception as exc:
-        await db.rollback()
-        logger.exception("cases.reopen.timeline_event_failed case=%s", cid)
-        raise HTTPException(status_code=503, detail="Database error") from exc
-    return _row_to_case(row)
-
 
 @router.post("/{case_id}/alerts", response_model=CaseResponse, summary="Link alerts to a case")
 async def add_alerts(
@@ -1648,14 +1584,17 @@ async def case_investigate(
     try:
         st_row = (
             await db.execute(
-                text("SELECT status FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id").bindparams(id=cid, tenant_id=user.tenant_id)
+                text(
+                    "SELECT status FROM aisoc_cases WHERE id = :id AND tenant_id = :tenant_id"
+                ).bindparams(id=cid, tenant_id=user.tenant_id)
             )
         ).fetchone()
         if st_row and st_row.status != "investigating" and _status_transition_ok(st_row.status, "investigating"):
             await db.execute(
-                text("UPDATE aisoc_cases SET status = 'investigating', updated_at = :now WHERE id = :id AND tenant_id = :tenant_id").bindparams(
-                    id=cid, tenant_id=user.tenant_id, now=datetime.now(UTC)
-                )
+                text(
+                    "UPDATE aisoc_cases SET status = 'investigating', updated_at = :now "
+                    "WHERE id = :id AND tenant_id = :tenant_id"
+                ).bindparams(id=cid, tenant_id=user.tenant_id, now=datetime.now(UTC))
             )
             await db.commit()
     except Exception:  # noqa: BLE001 — never block the launch on the status bump
@@ -1666,7 +1605,7 @@ async def case_investigate(
         "POST",
         f"/api/v1/cases/{cid}/investigate",
         json={
-            "alert_summary": body.alert_summary or (raw_alert_payload.get("alerts", [{}])[0].get("title") if raw_alert_payload.get("alerts") else ""),
+            "alert_summary": summary,
             "raw_alert": raw_alert_payload,
             "tenant_id": str(user.tenant_id),
         },
@@ -1952,7 +1891,11 @@ async def case_investigation_pdf(
     user: AuthUser,
 ) -> Response:
     safe_run_id = quote(run_id, safe="")
-    resp = await _agents_proxy("GET", f"/api/v1/investigations/{safe_run_id}/report.pdf", headers={"X-AiSOC-Tenant-ID": str(user.tenant_id)})
+    resp = await _agents_proxy(
+        "GET",
+        f"/api/v1/investigations/{safe_run_id}/report.pdf",
+        headers={"X-AiSOC-Tenant-ID": str(user.tenant_id)},
+    )
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     safe_case_id = _safe_filename_segment(case_id)

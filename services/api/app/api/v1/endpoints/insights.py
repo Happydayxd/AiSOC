@@ -48,11 +48,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-
-def _tid(t):
-    """Bind a native UUID for raw SQL on uuid-typed columns (asyncpg)."""
-    return t if isinstance(t, uuid.UUID) else uuid.UUID(str(t))
-
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -67,6 +62,11 @@ from app.models.case import Case
 from app.services import case_status
 
 logger = logging.getLogger(__name__)
+
+
+def _tid(t):
+    """Bind a native UUID for raw SQL on uuid-typed columns (asyncpg)."""
+    return t if isinstance(t, uuid.UUID) else uuid.UUID(str(t))
 
 router = APIRouter(prefix="/insights", tags=["insights"])
 

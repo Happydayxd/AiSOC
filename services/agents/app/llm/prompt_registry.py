@@ -561,7 +561,7 @@ def default_registry() -> PromptRegistry:
     reg.register("insider_threat.system", "1", _INSIDER_THREAT_SYSTEM)
     reg.register("phishing.system", "1", _PHISHING_SYSTEM)
     reg.register("recon.system", "1", _RECON_SYSTEM)
-    reg.register("forensic.system", "1", _FORENSIC_SYSTEM)
+    reg.register("forensic.system", "2", _FORENSIC_SYSTEM)
     reg.register("responder.system", "1", _RESPONDER_SYSTEM)
     reg.register("report_writer.system", "1", _REPORT_WRITER_SYSTEM)
     reg.register("playbook_drafter.system", "1", _PLAYBOOK_DRAFTER_SYSTEM)
