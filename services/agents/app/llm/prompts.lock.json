@@ -48,8 +48,8 @@
     "version": "1"
   },
   "forensic.system": {
-    "sha256": "f2eb47f8a0c9bb7d5d1f30c5569bdd698a0f961d22b10f0fd6b6e9470464e928",
-    "version": "1"
+    "sha256": "3084c2e15386500b1c61e741b01ef36456e6b6a1ddfde4f6c51e103e9ac2472a",
+    "version": "2"
   },
   "hunt.system": {
     "sha256": "cb7225c08a170bf2511ec0a04936cf91fd83dce38659f72de872481c217e5dd5",
