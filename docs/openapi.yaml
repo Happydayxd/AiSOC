@@ -31,6 +31,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/sso/status:
+    get:
+      tags:
+      - auth
+      summary: Sso Status
+      description: 'What the login screen asks before it offers SSO. Public: it reveals
+
+        only that SSO is offered, under what label, and whether password sign-in
+
+        remains open -- never issuers, client ids, endpoints or secrets.'
+      operationId: sso_status_api_v1_auth_sso_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Sso Status Api V1 Auth Sso Status Get
   /api/v1/auth/refresh:
     post:
       tags:
@@ -7751,7 +7771,7 @@ paths:
 
         24h ago). Values are percentage changes rounded to two decimals; a delta
 
-        of ``0.0`` means "no meaningful baseline" (the previous window was empty).'
+        of ``None`` means "no baseline" (the previous window was empty).'
       operationId: get_funnel_metrics_api_v1_metrics_funnel_get
       security:
       - HTTPBearer: []
@@ -18349,6 +18369,16 @@ components:
           type: array
           title: Recommended Actions
           default: []
+        raw_event:
+          additionalProperties: true
+          type: object
+          title: Raw Event
+          default: {}
+        wazuh_locator:
+          additionalProperties: true
+          type: object
+          title: Wazuh Locator
+          default: {}
       type: object
       required:
       - id
@@ -18894,12 +18924,12 @@ components:
             type: array
           - type: 'null'
           title: Tags
-        assigned_to_id:
+        assignee:
           anyOf:
           - type: string
             format: uuid
           - type: 'null'
-          title: Assigned To Id
+          title: Assignee
         case_id:
           anyOf:
           - type: string
@@ -22393,6 +22423,10 @@ components:
       title: CspmScanResponse
     DashboardMetrics:
       properties:
+        period:
+          type: string
+          title: Period
+          default: 24h
         alerts:
           $ref: '#/components/schemas/AlertMetrics'
         cases:
@@ -24464,33 +24498,43 @@ components:
     FunnelDeltas:
       properties:
         events_of_interest:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Events Of Interest
         correlation_instances:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Correlation Instances
         alerts_generated:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Alerts Generated
         signal_to_noise:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Signal To Noise
         mttd_seconds:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Mttd Seconds
         analyst_queue_depth:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Analyst Queue Depth
       type: object
-      required:
-      - events_of_interest
-      - correlation_instances
-      - alerts_generated
-      - signal_to_noise
-      - mttd_seconds
-      - analyst_queue_depth
       title: FunnelDeltas
-      description: Period-over-period percentage deltas for the funnel KPI bar.
+      description: 'Period-over-period percentage deltas for the funnel KPI bar.
+
+
+        ``None`` means the previous window was empty — no baseline exists, and
+
+        the UI renders that as "no baseline" instead of a misleading 0%.'
     FunnelMetrics:
       properties:
         period:
@@ -32449,6 +32493,24 @@ components:
           - type: string
           - type: 'null'
           title: Metadata Xml
+        allowed_email_domains:
+          type: string
+          maxLength: 2000
+          title: Allowed Email Domains
+          default: ''
+        jit_provisioning:
+          type: boolean
+          title: Jit Provisioning
+          default: true
+        group_role_mode:
+          type: string
+          title: Group Role Mode
+          default: first_login_only
+        login_label:
+          type: string
+          maxLength: 80
+          title: Login Label
+          default: ''
       type: object
       required:
       - provider
@@ -32484,6 +32546,18 @@ components:
         default_role:
           type: string
           title: Default Role
+        allowed_email_domains:
+          type: string
+          title: Allowed Email Domains
+        jit_provisioning:
+          type: boolean
+          title: Jit Provisioning
+        group_role_mode:
+          type: string
+          title: Group Role Mode
+        login_label:
+          type: string
+          title: Login Label
         metadata_url:
           anyOf:
           - type: string
@@ -32512,6 +32586,10 @@ components:
       - enabled
       - group_role_mapping
       - default_role
+      - allowed_email_domains
+      - jit_provisioning
+      - group_role_mode
+      - login_label
       - metadata_url
       - has_metadata_xml
       - created_at
@@ -34389,6 +34467,11 @@ components:
             - contained
             - resolved
             - closed
+            - open
+            - in_progress
+            - pending
+            - pending_closure
+            - cancelled
           - type: 'null'
           title: Status
         assignee:
@@ -34647,6 +34730,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Is Active
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
       type: object
       title: UpdateUserRequest
     UpsertAlertGraphRequest:

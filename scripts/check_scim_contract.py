@@ -220,8 +220,38 @@ def _dict_literal(tree: ast.Module, function: str) -> dict | None:
     return None
 
 
+def _subscript_keys(tree: ast.Module, variable: str) -> set[str]:
+    """Keys added after the literal, as ``VARIABLE["key"] = ...``.
+
+    A role can be *derived* rather than written out -- `infosec` is the union
+    of `soc_analyst` and `threat_hunter`, which cannot be expressed inside the
+    dict literal -- so it is assigned on a following line. Reading only the
+    literal made this gate report a working role as granting nothing, which is
+    worse than silence: a false finding on correct code is how a gate gets
+    suppressed, and then it catches the real one too.
+    """
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == variable
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)
+            ):
+                keys.add(target.slice.value)
+    return keys
+
+
 def _assigned_names(tree: ast.Module, variable: str) -> set[str] | None:
-    """Keys of a module-level dict, or members of a tuple/set/frozenset."""
+    """Keys of a module-level dict, or members of a tuple/set/frozenset.
+
+    Includes keys added by a later ``VARIABLE["key"] = ...`` assignment, which
+    is how a role derived from other roles has to be written.
+    """
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -233,7 +263,7 @@ def _assigned_names(tree: ast.Module, variable: str) -> set[str] | None:
         except (ValueError, TypeError, SyntaxError):
             return None
         if isinstance(value, dict):
-            return set(value)
+            return set(value) | _subscript_keys(tree, variable)
         if isinstance(value, list | tuple | set | frozenset):
             return set(value)
     for node in ast.walk(tree):
@@ -245,7 +275,7 @@ def _assigned_names(tree: ast.Module, variable: str) -> set[str] | None:
             except (ValueError, TypeError, SyntaxError):
                 return None
             if isinstance(value, dict):
-                return set(value)
+                return set(value) | _subscript_keys(tree, variable)
             if isinstance(value, list | tuple | set | frozenset):
                 return set(value)
     return None
