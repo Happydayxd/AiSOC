@@ -81,7 +81,10 @@ function formatPercent(ratio: number): string {
  * not.
  */
 function formatDelta(deltaPercent: number | null): string {
-  if (deltaPercent === null || !Number.isFinite(deltaPercent)) return '—';
+  // null means the previous window was empty: no baseline exists, and an
+  // em-dash would read as "flat". Say it plainly.
+  if (deltaPercent === null) return 'no baseline';
+  if (!Number.isFinite(deltaPercent)) return '—';
   const rounded =
     Math.abs(deltaPercent) >= 10 ? Math.round(deltaPercent) : deltaPercent.toFixed(1);
   const sign = deltaPercent > 0 ? '+' : deltaPercent < 0 ? '−' : '';

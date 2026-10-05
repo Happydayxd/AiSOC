@@ -60,6 +60,8 @@ const casesApi = vi.hoisted(() => ({
   openAutoSummaryHtml: vi.fn(),
   downloadReportPdf: vi.fn(),
   getAttackChain: vi.fn(),
+  getTimeline: vi.fn(),
+  reopen: vi.fn(),
 }));
 
 vi.mock('@/lib/api', () => ({
@@ -162,6 +164,10 @@ beforeEach(() => {
   swrErrors.clear();
   swrMutate.mockClear();
   for (const fn of Object.values(casesApi)) fn.mockReset();
+  // Methods whose callers chain (.then/.catch) need a resolved default;
+  // mockReset() alone would make them return undefined and explode.
+  casesApi.getTimeline.mockResolvedValue({ events: [] });
+  casesApi.getAttackChain.mockResolvedValue({ nodes: [], edges: [] });
   __setDemoModeForTests(false);
 });
 
