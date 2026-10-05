@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Launching an agent investigation now advances the case.** The v17
+  canonical ladder declares only `triaged -> investigating`, but the launch
+  path kept the strict one-edge gate, so cases created at `new` (the
+  auto-triage default) silently stayed `new` forever while an investigation
+  ran against them. Launch is a deliberate analyst action, so it gets its
+  own forward-walk gate: `new -> investigating` along the ladder in one
+  step, never backwards, never re-hitting the same state, never touching
+  terminal cases — reopening stays the explicit `POST /reopen` path and
+  `PATCH` stays one-edge-only. Locked by
+  `tests/test_investigate_launch_status_gate.py`.
+- **Dashboard compile artifacts after the v17 rebase.** The rebase left
+  duplicated `useTimeWindow` imports (parse errors) in `DashboardView` and
+  both dashboard honesty suites, stale `period` references where upstream
+  moved to the selector hook, `STATUS_DOT` keys duplicated with
+  pre-canonical statuses that broke `Record<CaseStatus, string>`, a null
+  KPI delta rendering an em-dash instead of the contractual "no baseline",
+  and a case-workspace mock missing the `getTimeline`/`reopen` stubs
+  upstream components now call. Type-check is clean and the full console
+  suite (838 tests) passes on the branch.
+
 ## [17.0.0] - 2026-10-05
 
 ### Documentation
